@@ -87,6 +87,8 @@ struct Totals {
     features: BTreeMap<String, Tally>,
     /// Block types `nif::collision` met and didn't read.
     unhandled: BTreeMap<String, Tally>,
+    /// Phantoms by layer and shape.
+    phantoms: BTreeMap<String, Tally>,
     /// Errors from `nif::collision`.
     errors: BTreeMap<String, Tally>,
     /// Models whose solid collision reaches past what they draw: how far
@@ -109,6 +111,7 @@ impl Totals {
         merge_map(&mut self.motion, other.motion);
         merge_map(&mut self.features, other.features);
         merge_map(&mut self.unhandled, other.unhandled);
+        merge_map(&mut self.phantoms, other.phantoms);
         merge_map(&mut self.errors, other.errors);
     }
 }
@@ -367,6 +370,22 @@ fn survey_model(nif: &Nif, path: &str, totals: &mut Totals) {
 
     match nif.collision() {
         Ok(c) => {
+            for phantom in &c.phantoms {
+                let kind = match &phantom.shape {
+                    nif::CollisionShape::Convex { vertices, .. } => {
+                        format!("convex of {} corners", vertices.len())
+                    }
+                    nif::CollisionShape::Triangles { .. } => "triangle mesh".to_string(),
+                    nif::CollisionShape::Sphere { .. } => "sphere".to_string(),
+                    nif::CollisionShape::Capsule { .. } => "capsule".to_string(),
+                };
+                totals.phantoms.entry(format!(
+                    "{}: {kind}",
+                    nif::collision::layers::name(phantom.layer)
+                ))
+                .or_default()
+                .add(1, path);
+            }
             for (t, n) in c.unhandled {
                 totals.unhandled.entry(t).or_default().add(n, path);
             }
@@ -625,6 +644,13 @@ fn report(out: &mut impl Write, totals: &Totals) -> Result<(), CliError> {
     }
 
     writeln!(out, "\nWhat nif::collision met and doesn't read:")?;
+    if !totals.phantoms.is_empty() {
+        writeln!(out, "
+Phantoms, by layer and shape:")?;
+        for (kind, tally) in &totals.phantoms {
+            tally_line(out, kind, tally)?;
+        }
+    }
     if totals.unhandled.is_empty() {
         writeln!(out, "  nothing")?;
     }

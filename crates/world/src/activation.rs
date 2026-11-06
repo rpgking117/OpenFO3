@@ -122,7 +122,7 @@ pub fn actor_flags(order: &LoadOrder, base: FormId) -> u32 {
 
 /// Whether a reference is a person or creature (the player too): what the
 /// game asks through the reference's vtable +0x100.
-fn is_actor(order: &LoadOrder, reference: FormId) -> bool {
+pub(crate) fn is_actor(order: &LoadOrder, reference: FormId) -> bool {
     reference == PLAYER_REF
         || order
             .get(reference)
@@ -302,6 +302,47 @@ pub struct Info {
     pub empty: Option<String>,
     /// Weight and value with their labels (+0xb4 … +0xc0), for items.
     pub weight_value: Option<WeightValue>,
+    /// For an activator with water: the health its drink restores and the
+    /// radiation it gives (`0064a130`, from the water form).
+    pub water: Option<WaterLine>,
+}
+
+/// What a drink does, as the HUD shows it on a water activator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterLine {
+    pub health: f32,
+    pub rads: f32,
+}
+
+/// An activator's water type's drink spell (the base's `WNAM`, a `WATR` whose
+/// `XNAM` is the spell).
+pub fn drink_spell(order: &LoadOrder, activator_base: FormId) -> Option<FormId> {
+    let form = |holder: FormId, sig: &[u8; 4]| {
+        let rr = order.get(holder)?;
+        let s = rr.subrecord(FourCC::new(sig)).ok()??;
+        (s.len() >= 4)
+            .then(|| rr.plugin.to_global(FormId(le_u32(&s, 0))))
+            .filter(|f| f.0 != 0)
+    };
+    form(form(activator_base, b"WNAM")?, b"XNAM")
+}
+
+/// What a drink from this activator base does ([`WaterLine`]): its spell's
+/// Restore Health (actor value 16) and Damage Rads (54).
+pub fn water_line(order: &LoadOrder, activator_base: FormId) -> Option<WaterLine> {
+    let spell = drink_spell(order, activator_base)?;
+    let mut line = WaterLine {
+        health: 0.0,
+        rads: 0.0,
+    };
+    for e in crate::items::effects(order, spell) {
+        match e.actor_value {
+            16 => line.health += e.magnitude as f32,
+            54 => line.rads += e.magnitude as f32,
+            _ => {}
+        }
+    }
+    Some(line)
 }
 
 /// An item's weight and value lines (`00775a00`, formats `%.1f` and
@@ -422,6 +463,40 @@ pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<I
     } else {
         name.clone()
     };
+    if k == *b"ACTI" {
+        out.water = water_line(order, base);
+        // A drink's health and radiation in the item's weight and value lines
+        // (`0064a130`: `006457b0`, `006456c0`). The radiation goes through the
+        // player's perks (entry point 0x1A: Lead Belly), and any share of one
+        // shows as 1.
+        if let Some(w) = out.water {
+            let share = crate::perks::apply_for(
+                order,
+                state,
+                PLAYER_REF,
+                crate::perks::entry::ADJUST_DRINKING_RADIATION,
+                1.0,
+                &[],
+            );
+            // The player's radiation resistance too (`007218d0`, actor value
+            // 0x14).
+            let resist = crate::scripting::Facts {
+                order,
+                state,
+                speaker: None,
+            }
+            .current_actor_value(PLAYER_REF, 0x14)
+            .unwrap_or(0.0) as f32;
+            let rads = w.rads * share * (1.0 - resist.clamp(0.0, 100.0) * 0.01);
+            let rads = if rads > 0.0 && rads < 1.0 { 1.0 } else { rads };
+            out.weight_value = Some(WeightValue {
+                weight: format!("{:.0}", w.health),
+                weight_label: text(order, "sStatsHP", "HP"),
+                value: format!("{rads:.0}"),
+                value_label: text(order, "sStatsRad", "RAD"),
+            });
+        }
+    }
     // The action words.
     let crime_take = class == class::TAKE && out.crime;
     let teammate = actor && state.teammates.contains(&reference);
@@ -610,4 +685,119 @@ pub fn pickup_message(order: &LoadOrder, item: FormId, count: i32) -> Option<Str
 /// A float setting (for the callers' picks), else the exe's value.
 pub fn setting(order: &LoadOrder, name: &str, exe: f32) -> f32 {
     game_setting(order, name).unwrap_or(exe)
+}
+
+/// Activate parents (`XAPR` on the child: its parent and a delay), turned round
+/// as the game keeps them (`ExtraActivateRefChildren`): a parent's children and
+/// their delays, read once from the plugins.
+#[derive(Debug, Clone, Default)]
+pub struct ActivateLinks(
+    std::sync::Arc<std::sync::OnceLock<std::collections::HashMap<FormId, Vec<(FormId, f32)>>>>,
+);
+
+impl ActivateLinks {
+    fn children(&self, order: &LoadOrder, parent: FormId) -> Vec<(FormId, f32)> {
+        self.0
+            .get_or_init(|| {
+                let mut out: std::collections::HashMap<FormId, Vec<(FormId, f32)>> =
+                    std::collections::HashMap::new();
+                for kind in [b"REFR", b"ACHR", b"ACRE"] {
+                    for rr in order.records_of_type(FourCC::new(kind)) {
+                        if !matches!(rr.subrecord(XAPR), Ok(Some(_))) {
+                            continue;
+                        }
+                        let Ok(record) = rr.record() else { continue };
+                        for s in record.get_all(XAPR).filter(|s| s.data.len() >= 8) {
+                            let to = rr.plugin.to_global(FormId(le_u32(&s.data, 0)));
+                            let delay = f32::from_le_bytes([
+                                s.data[4], s.data[5], s.data[6], s.data[7],
+                            ]);
+                            out.entry(to).or_default().push((rr.form_id, delay));
+                        }
+                    }
+                }
+                out
+            })
+            .get(&parent)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+const XAPR: FourCC = FourCC::new(b"XAPR");
+const XAPD: FourCC = FourCC::new(b"XAPD");
+
+/// The message when the player uses an object only its parents can activate
+/// (`004ee000`).
+pub const ACTIVATED_ELSEWHERE: &str = "This object is activated from somewhere else.";
+
+/// Whether only its activate parents can activate it (`XAPD` flag 1;
+/// `0040cb10`).
+pub fn parent_only(order: &LoadOrder, reference: FormId) -> bool {
+    let Some(rr) = order.get(reference) else {
+        return false;
+    };
+    matches!(rr.subrecord(XAPD), Ok(Some(d)) if d.first().is_some_and(|f| f & 1 != 0))
+}
+
+/// A reference activated: its children are, by it (`004ed0d0`, in
+/// `TESObjectREFR`'s activation `004ee000` before the base's own), at once or
+/// after their delay. A wall switch's door, a tripwire's grenades.
+pub fn activate_children(
+    order: &LoadOrder,
+    cache: &crate::scripting::ScriptCache,
+    state: &mut GameState,
+    parent: FormId,
+) {
+    let links = state.more.activate_links.clone();
+    for (child, delay) in links.children(order, parent) {
+        if delay > 0.0 {
+            let when = state.seconds + f64::from(delay);
+            state.more.delayed_activations.push((when, child, parent));
+        } else {
+            activate_by(order, cache, state, child, parent);
+        }
+    }
+}
+
+/// The children whose delay is over.
+pub fn run_delayed_activations(
+    order: &LoadOrder,
+    cache: &crate::scripting::ScriptCache,
+    state: &mut GameState,
+) {
+    if state.more.delayed_activations.is_empty() {
+        return;
+    }
+    let now = state.seconds;
+    let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut state.more.delayed_activations)
+        .into_iter()
+        .partition(|(when, _, _)| *when <= now);
+    state.more.delayed_activations = later;
+    for (_, child, parent) in due {
+        activate_by(order, cache, state, child, parent);
+    }
+}
+
+/// `child` activated by `parent` (`004ee000`): its script's `OnActivate` if it
+/// has one (which goes on to the object's own activation by calling
+/// `Activate`), else the object's own activation.
+fn activate_by(
+    order: &LoadOrder,
+    cache: &crate::scripting::ScriptCache,
+    state: &mut GameState,
+    child: FormId,
+    parent: FormId,
+) {
+    let scripted = crate::scripting::script_of(order, child)
+        .and_then(|s| cache.script(order, s))
+        .is_some_and(|s| s.blocks.iter().any(|b| b.kind == "onactivate"));
+    if scripted {
+        crate::scripting::Runner::new(order, cache, state).run_event(child, "onactivate", parent);
+    } else {
+        state.events.push(crate::scripting::Event::Activate {
+            what: child,
+            by: Some(parent),
+        });
+    }
 }

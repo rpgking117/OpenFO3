@@ -112,6 +112,34 @@ struct Launcher {
     /// What the original game's settings say (the Import page).
     imported: Option<import::Imported>,
     game: Option<Child>,
+    /// When PLAY started the game, while the launcher waits to see it get going.
+    started: Option<std::time::Instant>,
+    /// The game crashed: the play bar offers its log.
+    crashed: bool,
+}
+
+/// How long the launcher stays after PLAY to see that the game keeps running.
+/// A crash while starting would otherwise look like PLAY doing nothing.
+const START_WATCH: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The reason in a crashed game's log: the line after the last panic's.
+fn crash_reason(log: &str) -> Option<String> {
+    let mut lines = log.lines();
+    let mut reason = None;
+    while let Some(line) = lines.next() {
+        if line.contains("panicked at") {
+            reason = lines.next().map(|l| l.trim().to_string());
+        }
+    }
+    reason.filter(|r| !r.is_empty())
+}
+
+/// What the status bar says about a game that stopped with an error.
+fn crash_message(log: Option<&str>) -> String {
+    match log.and_then(crash_reason) {
+        Some(why) => format!("OpenFO3 crashed: {why}"),
+        None => "OpenFO3 crashed.".to_string(),
+    }
 }
 
 impl Launcher {
@@ -132,6 +160,8 @@ impl Launcher {
             status_bad: false,
             imported: None,
             game: None,
+            started: None,
+            crashed: false,
         };
         l.rescan();
         match (&l.config.data_dir, first_run) {
@@ -215,14 +245,13 @@ impl Launcher {
             }
         }
         detect::hide_console(&mut cmd);
+        self.crashed = false;
         match cmd.spawn() {
             Ok(child) => {
-                if self.config.keep_open {
-                    self.say("OpenFO3 is running.");
-                    self.game = Some(child);
-                } else {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                self.say("Starting OpenFO3...");
+                self.game = Some(child);
+                self.started = Some(std::time::Instant::now());
+                ctx.request_repaint();
             }
             Err(e) => self.warn(format!("Couldn't start {}: {e}", exe.display())),
         }
@@ -285,6 +314,10 @@ fn edition(plugins: &[config::Plugin]) -> String {
     }
 }
 
+fn open_file(path: &Path) {
+    let _ = Command::new("explorer").arg(path).spawn();
+}
+
 fn open_folder(path: &Path) {
     let _ = std::fs::create_dir_all(path);
     let _ = Command::new("explorer").arg(path).spawn();
@@ -292,20 +325,32 @@ fn open_folder(path: &Path) {
 
 impl eframe::App for Launcher {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // The game ended (with the launcher kept open).
+        // The game ended, or got going.
         if let Some(child) = &mut self.game {
-            if let Ok(Some(status)) = child.try_wait() {
-                self.game = None;
-                if status.success() {
-                    self.say("OpenFO3 closed.");
-                } else {
-                    self.warn(format!(
-                        "OpenFO3 stopped with an error: see {}",
-                        config::log_path().display()
-                    ));
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.game = None;
+                    self.started = None;
+                    if status.success() {
+                        self.say("OpenFO3 closed.");
+                    } else {
+                        self.crashed = true;
+                        let log = std::fs::read_to_string(config::log_path()).ok();
+                        self.warn(crash_message(log.as_deref()));
+                    }
+                }
+                _ => {
+                    if self.started.is_some_and(|at| at.elapsed() >= START_WATCH) {
+                        self.started = None;
+                        if self.config.keep_open {
+                            self.say("OpenFO3 is running.");
+                        } else {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    }
                 }
             }
-            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
 
         egui::TopBottomPanel::top("banner")
@@ -399,6 +444,9 @@ impl Launcher {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::play_button(ui, ready && self.game.is_none()) {
                     self.play(ctx);
+                }
+                if self.crashed && ui.button("Open log").clicked() {
+                    open_file(&config::log_path());
                 }
             });
         });
@@ -622,7 +670,7 @@ impl Launcher {
             let help = match self.config.window {
                 WindowMode::Windowed => "A normal window you can move and resize.",
                 WindowMode::Borderless => "Covers the screen without changing its mode: quick to Alt+Tab.",
-                WindowMode::Fullscreen => "The screen is given over to the game.",
+                WindowMode::Fullscreen => "Takes over the screen at its current resolution.",
             };
             ui::setting(ui, "Mode", help, |ui| {
                 ui::segmented(
@@ -956,6 +1004,31 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A game that dies while starting says why, in the words of its log (the
+    /// real log's shape: a panic, its reason on the next line).
+    #[test]
+    fn a_crash_gives_the_reason_from_the_log() {
+        let log = "Loaded Vault101d in 3.7 s; starting at the arrival point.\n\
+            WARN Can't select current monitor on window creation\n\
+            \n\
+            thread 'main' (42192) panicked at winit_windows.rs:79:22:\n\
+            Unable to get monitor.\n\
+            note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n";
+        assert_eq!(crash_reason(log).as_deref(), Some("Unable to get monitor."));
+        assert_eq!(
+            crash_message(Some(log)),
+            "OpenFO3 crashed: Unable to get monitor."
+        );
+    }
+
+    /// A crash without a panic, or without a log, still says it crashed.
+    #[test]
+    fn a_crash_with_no_reason_still_says_so() {
+        assert_eq!(crash_reason("Loading Vault101d\n"), None);
+        assert_eq!(crash_message(Some("Loading Vault101d\n")), "OpenFO3 crashed.");
+        assert_eq!(crash_message(None), "OpenFO3 crashed.");
+    }
 
     /// The game's command line follows the settings.
     #[test]

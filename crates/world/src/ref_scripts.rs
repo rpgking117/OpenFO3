@@ -53,6 +53,35 @@ pub const GRIDS_TO_LOAD: i32 = 5;
 /// for it here (unresolved approximation, kept from the viewer).
 pub const BODY_HEIGHTS: [f32; 3] = [10.0, 64.0, 110.0];
 
+/// How far apart the points of a person's way through a frame are tested,
+/// and the longest way tested (a longer one is a teleport).
+///
+/// [stand-in] The game tests a body with some width against the phantom in
+/// fixed physics steps, so nobody passes through a volume unseen; here a
+/// person is points, and a frame can be long, so a thin wall
+/// (`triggers\\trigplayerwall01.nif`, 23 units deep) needs the whole way.
+const WAY_STEP: f32 = 8.0;
+const LONGEST_WAY: f32 = 320.0;
+
+/// The points tested for a person going `from` → `to` in a frame.
+pub fn way_points(from: Option<[f32; 3]>, to: [f32; 3]) -> Vec<[f32; 3]> {
+    let Some(from) = from else {
+        return vec![to];
+    };
+    let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let length = d.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if length <= WAY_STEP || length > LONGEST_WAY {
+        return vec![to];
+    }
+    let steps = (length / WAY_STEP).ceil() as usize;
+    (1..=steps)
+        .map(|k| {
+            let t = k as f32 / steps as f32;
+            [from[0] + d[0] * t, from[1] + d[1] * t, from[2] + d[2] * t]
+        })
+        .collect()
+}
+
 pub const ON_LOAD: &str = "onload";
 pub const ON_TRIGGER: &str = "ontrigger";
 pub const ON_TRIGGER_ENTER: &str = "ontriggerenter";
@@ -145,6 +174,12 @@ pub struct RefScripts {
     /// Attached cells in pass order, with their references.
     cells: Vec<(FormId, Vec<Interactive>)>,
     all: Vec<Interactive>,
+    /// Where each person stood at the last frame.
+    last_feet: HashMap<FormId, [f32; 3]>,
+    /// The attached activators with a radio (`RNAM`), and what each plays;
+    /// those playing now.
+    radios: Vec<(FormId, FormId)>,
+    radios_on: std::collections::HashSet<FormId>,
     /// Events flagged in each reference's event list since its last run.
     pending: HashMap<FormId, Vec<(&'static str, Option<FormId>)>>,
     /// A trigger's action reference (`ExtraAction`), once set.
@@ -228,6 +263,10 @@ impl RefScripts {
         for reference in gone {
             self.force_leave(runner, reference);
             self.disabled.remove(&reference);
+            // Its 3D goes: its radio stops (`004f5f00`).
+            if self.radios_on.remove(&reference) {
+                runner.state.radio.disable_npc_radio(reference);
+            }
         }
         for &cell in cells {
             let refs = match old.remove(&cell) {
@@ -252,7 +291,60 @@ impl RefScripts {
             .iter()
             .flat_map(|(_, refs)| refs.iter().cloned())
             .collect();
+        self.find_radios(runner.order);
         true
+    }
+
+    /// The attached activators that have a radio.
+    fn find_radios(&mut self, order: &LoadOrder) {
+        self.radios = self
+            .all
+            .iter()
+            .filter(|r| r.kind == esm::FourCC::new(b"ACTI"))
+            .filter_map(|r| {
+                let rr = order.get(r.base)?;
+                let s = rr.subrecord(esm::FourCC::new(b"RNAM")).ok()??;
+                (s.len() >= 4).then(|| {
+                    let station = rr.plugin.to_global(FormId(crate::cell::le_u32(&s, 0)));
+                    (r.reference, station)
+                })
+            })
+            .collect();
+    }
+
+    /// An attached activator's radio plays while it is opening or open
+    /// (`004b3aa0` → `006c3bb0` as it's used, `004f5f00` as its 3D loads:
+    /// `0044df30` answering 1 or 2): one with a model that opens and closes,
+    /// so a radio that starts open plays as the player arrives.
+    fn update_radios(&mut self, runner: &mut Runner) {
+        for &(reference, station) in &self.radios {
+            let order = runner.order;
+            let enabled = crate::enabled_now(order, reference, &runner.state.disabled);
+            let has_motion = crate::scripting::base_of(order, reference)
+                .is_some_and(|b| runner.state.door_lengths.contains_key(&b));
+            let on = enabled
+                && has_motion
+                && matches!(
+                    crate::doors::open_state(order, runner.state, reference),
+                    crate::doors::OpenState::Open | crate::doors::OpenState::Opening
+                );
+            if on == self.radios_on.contains(&reference) {
+                continue;
+            }
+            if on {
+                let mut radio = std::mem::take(&mut runner.state.radio);
+                // Out of the station's reach it stays silent: not asked again
+                // until it is switched or comes back.
+                let tuned = radio.enable_npc_radio(order, runner.state, reference, station);
+                println!("Radio {reference}: on, playing {station}: {tuned}.");
+                runner.state.radio = radio;
+                self.radios_on.insert(reference);
+            } else {
+                println!("Radio {reference}: off.");
+                runner.state.radio.disable_npc_radio(reference);
+                self.radios_on.remove(&reference);
+            }
+        }
     }
 
     /// References scripts moved (`MoveTo`, `SetPos`) go with their scripts
@@ -267,7 +359,12 @@ impl RefScripts {
     /// none attached). One moved out of the attached cells stops running
     /// and leaves its trigger's occupants; one moved into one gets
     /// `OnLoad`. Returns whether anything changed.
-    pub fn place_moved(&mut self, runner: &mut Runner, now: &[(FormId, Option<FormId>)]) -> bool {
+    pub fn place_moved(
+        &mut self,
+        runner: &mut Runner,
+        now: &[(FormId, Option<FormId>)],
+        mut fill: impl FnMut(&mut Interactive),
+    ) -> bool {
         let mut changed = false;
         for &(reference, cell_now) in now {
             let listed = self
@@ -311,6 +408,7 @@ impl RefScripts {
             if let Some((_, _, p, _)) = runner.state.place(runner.order, reference) {
                 r.position = p;
             }
+            fill(&mut r);
             if r.script.is_some() {
                 self.flag(reference, ON_LOAD, None);
                 let off = !crate::enabled_now(runner.order, reference, &runner.state.disabled);
@@ -326,6 +424,7 @@ impl RefScripts {
                 .iter()
                 .flat_map(|(_, refs)| refs.iter().cloned())
                 .collect();
+            self.find_radios(runner.order);
         }
         changed
     }
@@ -396,7 +495,8 @@ impl RefScripts {
 
     /// One frame in game mode: references enabled since last frame get
     /// `OnLoad` (their 3D is attached), triggers are updated for `people`
-    /// (reference and feet), then the reference-script pass runs
+    /// (reference and feet; everyone's way since the last frame counts),
+    /// then the reference-script pass runs
     /// (`00455490` over the attached cells, `0054c740` within each).
     /// Returns the references whose scripts ran.
     pub fn frame(&mut self, runner: &mut Runner, people: &[(FormId, [f32; 3])]) -> Vec<FormId> {
@@ -419,18 +519,26 @@ impl RefScripts {
                 _ => {}
             }
         }
+        self.update_radios(runner);
+        let ways: Vec<(FormId, Vec<[f32; 3]>)> = people
+            .iter()
+            .map(|(who, feet)| (*who, way_points(self.last_feet.get(who).copied(), *feet)))
+            .collect();
+        self.last_feet = people.iter().copied().collect();
         let steps: Vec<(FormId, Vec<FormId>)> = self
             .all
             .iter()
             .filter(|r| r.script.is_some() && r.trigger.is_some())
             .filter(|r| self.disabled.get(&r.reference) != Some(&true))
             .map(|r| {
-                let inside = people
+                let inside = ways
                     .iter()
-                    .filter(|(_, feet)| {
-                        BODY_HEIGHTS
-                            .iter()
-                            .any(|h| r.contains([feet[0], feet[1], feet[2] + h]))
+                    .filter(|(_, way)| {
+                        way.iter().any(|feet| {
+                            BODY_HEIGHTS
+                                .iter()
+                                .any(|h| r.contains([feet[0], feet[1], feet[2] + h]))
+                        })
                     })
                     .map(|(who, _)| *who)
                     .collect::<Vec<_>>();
@@ -454,5 +562,26 @@ impl RefScripts {
             }
         }
         ran
+    }
+}
+
+#[cfg(test)]
+mod way_tests {
+    use super::way_points;
+
+    /// A person crossing a wall 23 units deep in one long frame is seen in it.
+    #[test]
+    fn a_long_frame_still_crosses_a_thin_wall() {
+        let way = way_points(Some([0.0, 0.0, 0.0]), [100.0, 0.0, 0.0]);
+        assert_eq!(way.last(), Some(&[100.0, 0.0, 0.0]));
+        assert!(way.iter().any(|p| (p[0] - 50.0).abs() <= 11.5), "{way:?}");
+    }
+
+    #[test]
+    fn a_short_step_a_first_sight_and_a_teleport_are_one_point() {
+        let to = [100.0, 0.0, 0.0];
+        assert_eq!(way_points(Some([98.0, 0.0, 0.0]), to), vec![to]);
+        assert_eq!(way_points(None, to), vec![to]);
+        assert_eq!(way_points(Some([-5000.0, 0.0, 0.0]), to), vec![to]);
     }
 }

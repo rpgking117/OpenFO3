@@ -12,6 +12,23 @@ pub enum WindowChoice {
     Fullscreen,
 }
 
+impl WindowChoice {
+    /// The window's mode. Always on the primary monitor: a window being made
+    /// has no monitor yet, so asking for the current one finds none, and
+    /// exclusive fullscreen then panics ("Unable to get monitor."). The
+    /// monitor's own video mode, so it always exists.
+    pub fn mode(self) -> bevy::window::WindowMode {
+        use bevy::window::{MonitorSelection, VideoModeSelection, WindowMode};
+        match self {
+            WindowChoice::Windowed => WindowMode::Windowed,
+            WindowChoice::Borderless => WindowMode::BorderlessFullscreen(MonitorSelection::Primary),
+            WindowChoice::Fullscreen => {
+                WindowMode::Fullscreen(MonitorSelection::Primary, VideoModeSelection::Current)
+            }
+        }
+    }
+}
+
 use esm::FormId;
 
 pub const USAGE: &str = "\
@@ -978,6 +995,17 @@ mod tests {
         ]))
         .unwrap()
         .unwrap();
+        use bevy::window::{MonitorSelection, VideoModeSelection, WindowMode};
+        // Never the "current" monitor: there is none yet (see `mode`).
+        assert_eq!(WindowChoice::Windowed.mode(), WindowMode::Windowed);
+        assert_eq!(
+            WindowChoice::Borderless.mode(),
+            WindowMode::BorderlessFullscreen(MonitorSelection::Primary)
+        );
+        assert_eq!(
+            WindowChoice::Fullscreen.mode(),
+            WindowMode::Fullscreen(MonitorSelection::Primary, VideoModeSelection::Current)
+        );
         assert_eq!(args.window_mode, Some(WindowChoice::Borderless));
         assert_eq!(args.resolution, Some((2560, 1440)));
         assert_eq!(args.vsync, Some(true));

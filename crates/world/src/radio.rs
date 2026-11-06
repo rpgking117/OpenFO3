@@ -225,6 +225,39 @@ pub struct Place {
     pub cell: Option<FormId>,
     pub world: Option<FormId>,
     pub position: [f32; 3],
+    /// Indoors: the worldspace and spot the doors lead out to
+    /// ([`outside_of`]).
+    pub outside: Option<(FormId, [f32; 3])>,
+}
+
+/// Where an interior's doors lead out to a worldspace: the first exterior
+/// reached through load doors, nearest doors first. [stand-in] for the game's
+/// measure of a station's range along the path through doors (`006d4eb0`,
+/// `006d4d20`, not traced): the distance is from that door, not along the way.
+pub fn outside_of(order: &LoadOrder, cell: FormId) -> Option<(FormId, [f32; 3])> {
+    let mut seen = vec![cell];
+    let mut next = 0;
+    while next < seen.len() && seen.len() < 64 {
+        let here = seen[next];
+        next += 1;
+        for rr in order.references_in_cell(here) {
+            let Some(teleport) = crate::placement::teleport_of(&rr) else {
+                continue;
+            };
+            let Some(to_rr) = order.get(teleport.door) else {
+                continue;
+            };
+            if let Some(world) = order.world_of(&to_rr) {
+                return Some((world, teleport.position));
+            }
+            if let Some(c) = order.cell_of(&to_rr) {
+                if !seen.contains(&c) {
+                    seen.push(c);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The stations in range and their distances (`004ff1a0`): disabled
@@ -240,6 +273,13 @@ pub fn in_range(
     if place.cell.is_none() {
         return out;
     }
+    // Indoors a station is measured from the way out (`006d4eb0`, a path
+    // through doors; [`outside_of`] stands for it).
+    let (here_world, here) = match (place.world, place.outside) {
+        (Some(w), _) => (Some(w), place.position),
+        (None, Some((w, at))) => (Some(w), at),
+        (None, None) => (None, place.position),
+    };
     for s in stations {
         if disabled(s.reference) && place.world.is_some() {
             continue;
@@ -251,25 +291,22 @@ pub fn in_range(
                     Some(p) => position_of(p).unwrap_or((s.world, s.position)),
                     None => (s.world, s.position),
                 };
-                match (world, place.world) {
-                    (Some(w), Some(pw)) if w == pw => {
-                        let d = [
-                            place.position[0] - pos[0],
-                            place.position[1] - pos[1],
-                            place.position[2] - pos[2],
-                        ];
+                // Outdoors, the plain distance to it (`004a7ec0` case 0,
+                // `004e7e00`): a town's own worldspace, as Megaton's or the
+                // Mall's, shares the Wasteland's coordinates.
+                match (world, here_world) {
+                    (Some(_), Some(_)) => {
+                        let d = [here[0] - pos[0], here[1] - pos[1], here[2] - pos[2]];
                         dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                         dist < s.data.radius
                     }
-                    // An interior player: the game measures the path through
-                    // doors (`006d4eb0`, not traced): out of range here.
                     _ => false,
                 }
             }
             1 => true,
-            2 => match place.world {
+            2 => match here_world {
                 Some(pw) => s.world == Some(pw),
-                // Through doors (`006d4d20`, not traced): its own cell only.
+                // No way out to a worldspace: its own cell only.
                 None => s.cell == place.cell,
             },
             3 => place.world.is_none() && s.cell == place.cell,
@@ -421,6 +458,8 @@ pub trait RadioFiles {
 pub struct Radio {
     /// The placed stations, read once.
     pub stations_placed: Option<Vec<StationRef>>,
+    /// Where each interior met so far leads out to ([`outside_of`]).
+    outsides: HashMap<FormId, Option<(FormId, [f32; 3])>>,
     pub stations: Vec<Station>,
     /// The discovered stations (`011dd59c`), in order found.
     pub discovered: Vec<FormId>,
@@ -456,6 +495,17 @@ pub struct Radio {
 }
 
 impl Radio {
+    /// [`Place::outside`] for an interior place, remembered per cell.
+    fn with_outside(&mut self, order: &LoadOrder, mut place: Place) -> Place {
+        if let (None, Some(cell)) = (place.world, place.cell) {
+            place.outside = *self
+                .outsides
+                .entry(cell)
+                .or_insert_with(|| outside_of(order, cell));
+        }
+        place
+    }
+
     fn placed<'a>(&'a mut self, order: &LoadOrder) -> &'a [StationRef] {
         self.stations_placed
             .get_or_insert_with(|| station_refs(order))
@@ -600,7 +650,8 @@ impl Radio {
     pub fn first_in_range(&mut self, order: &LoadOrder, state: &GameState) -> Option<FormId> {
         let placed = self.placed(order).to_vec();
         let disabled = |r: FormId| disabled(order, state, r);
-        in_range(&placed, &place_of(state), &disabled, &|r| {
+        let here = self.with_outside(order, place_of(state));
+        in_range(&placed, &here, &disabled, &|r| {
             position_of(order, r)
         })
         .first()
@@ -684,15 +735,28 @@ impl Radio {
                 let Some((space, cell, position, _)) = state.place(order, who) else {
                     return false;
                 };
-                let around = Place {
-                    cell: Some(cell),
-                    world: (space != cell).then_some(space),
-                    position,
-                };
+                let around = self.with_outside(
+                    order,
+                    Place {
+                        cell: Some(cell),
+                        world: (space != cell).then_some(space),
+                        position,
+                        outside: None,
+                    },
+                );
                 let disabled = |r: FormId| disabled(order, state, r);
-                let found = in_range(&placed, &around, &disabled, &|r| position_of(order, r))
-                    .into_iter()
-                    .find(|&(r, _)| base_of(r) == Some(base));
+                // Of a base's stations in range an enabled one, if there is
+                // one (`006c0fc0`): indoors the disabled ones count too.
+                let of_base: Vec<(FormId, f32)> =
+                    in_range(&placed, &around, &disabled, &|r| position_of(order, r))
+                        .into_iter()
+                        .filter(|&(r, _)| base_of(r) == Some(base))
+                        .collect();
+                let found = of_base
+                    .iter()
+                    .find(|&&(r, _)| !disabled(r))
+                    .or(of_base.first())
+                    .copied();
                 let Some((reference, _)) = found else {
                     return false;
                 };
@@ -861,7 +925,8 @@ impl Radio {
         let mut found: Vec<(FormId, f32)> = Vec::new();
         if find {
             let placed = self.placed(order).to_vec();
-            found = in_range(&placed, place, &disabled, &position_of);
+            let here = self.with_outside(order, *place);
+            found = in_range(&placed, &here, &disabled, &position_of);
             for &(r, _) in &found {
                 if !disabled(r) && !self.discovered.contains(&r) {
                     if self.not_first_pass {
@@ -1126,7 +1191,12 @@ impl Radio {
         if let Some(path) = item.sound().and_then(|snd| sound_file(order, snd)) {
             return Some((format!("sound\\{}", path.to_ascii_lowercase()), true));
         }
-        let v = self.station_ref(st.reference)?.voice?;
+        // Its own speaker's voice when the line names one (Fallout 3's stations
+        // have no voice type of their own: Three Dog's lines name him).
+        let v = self
+            .station_ref(st.reference)?
+            .voice
+            .unwrap_or(FormId(0));
         let resp = item.info.responses.first()?;
         Some((dialogue::voice_path(order, &item.info, resp, v)?, false))
     }
@@ -1377,6 +1447,7 @@ pub fn place_of(state: &GameState) -> Place {
         cell: state.player_cell,
         world: state.player_world,
         position: state.player_position.unwrap_or([0.0; 3]),
+        outside: None,
     }
 }
 
@@ -1489,6 +1560,7 @@ mod tests {
             cell: Some(FormId(100)),
             world: Some(FormId(10)),
             position: [600.0, 0.0, 600.0],
+            outside: None,
         };
         let none = |_: FormId| false;
         let pos = |_: FormId| None;
@@ -1510,6 +1582,7 @@ mod tests {
             cell: Some(FormId(300)),
             world: None,
             position: [0.0; 3],
+            outside: None,
         };
         let all_disabled = |_: FormId| true;
         let hits: Vec<u32> = in_range(&s, &inside, &all_disabled, &pos)
@@ -1518,6 +1591,17 @@ mod tests {
             .collect();
         assert_eq!(hits, [3, 5]);
         assert!(in_range(&s, &outside, &all_disabled, &pos).is_empty());
+        // Indoors, a station is measured from where the doors lead out, and
+        // one of the worldspace reaches in.
+        let indoors = Place {
+            outside: outside.world.map(|w| (w, [10.0, 0.0, 0.0])),
+            ..inside
+        };
+        let hits: Vec<u32> = in_range(&s, &indoors, &none, &pos)
+            .iter()
+            .map(|(r, _)| r.0)
+            .collect();
+        assert!(hits.contains(&1), "{hits:?}");
     }
 
     /// `0079bea0`: discovered, enabled, Pip-Boy stations; in range first,

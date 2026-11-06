@@ -1693,9 +1693,11 @@ mod tests {
     use super::*;
     use crate::frame::{step_of, FrameState, Gate, Stage, STEPS};
 
+
     /// The rows of `frame.tsv` as (depth, address).
     fn rows() -> Vec<(u32, u32)> {
-        crate::frame::frame_tsv().unwrap_or("")
+        crate::frame::frame_tsv()
+            .unwrap_or("")
             .lines()
             .filter(|l| !l.starts_with('#') && !l.starts_with("seq\t"))
             .map(|l| {

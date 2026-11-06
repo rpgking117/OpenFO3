@@ -120,6 +120,23 @@ pub mod ids {
     /// A persistent `TestAdult` (record flag 0x400) at 0,-500,0, as the
     /// game's quest people (`MQ01SarahREF`).
     pub const PERSISTENT_REF: u32 = 0xF43;
+    /// A switch (a named activator without a script).
+    pub const SWITCH: u32 = 0xF4A;
+    /// `TestSwitch` at 500,300,0.
+    pub const SWITCH_REF: u32 = 0xF4B;
+    /// A `TestDoor` whose `XAPR` names `SWITCH_REF`, and only it can open it
+    /// (`XAPD` flag 1).
+    pub const SWITCHED_DOOR_REF: u32 = 0xF4C;
+    /// A named activator without a script, with water, as the game's sinks.
+    pub const SINK: u32 = 0xF44;
+    /// `TestSink` at 400,300,0.
+    pub const SINK_REF: u32 = 0xF45;
+    /// `TestSink`'s water type (`WATR`), whose `XNAM` is [`DRINK_SPELL`].
+    pub const SINK_WATER: u32 = 0xF46;
+    /// The drink: +24 health, +6 radiation.
+    pub const DRINK_SPELL: u32 = 0xF47;
+    pub const DRINK_RADS: u32 = 0xF48;
+    pub const DRINK_HEALTH: u32 = 0xF49;
 }
 
 /// The world, written as `FalloutNV.esm` into a temporary Data folder.
@@ -336,6 +353,52 @@ pub fn functions(tag: &str) -> TempData {
         0,
         &named(b"ACTI", GEAR_DOOR, "TestGearDoor", &gear),
     ));
+    // A sink: its water's spell, as the game's (Damage Rads and Restore Health,
+    // at once, value modifiers).
+    let mut sink = sub(b"FULL", &zstr("Sink"));
+    sink.extend(sub(b"WNAM", &SINK_WATER.to_le_bytes()));
+    plugin.extend(group(*b"ACTI", 0, &named(b"ACTI", SINK, "TestSink", &sink)));
+    plugin.extend(group(
+        *b"ACTI",
+        0,
+        &named(b"ACTI", SWITCH, "TestSwitch", &sub(b"FULL", &zstr("Switch"))),
+    ));
+    plugin.extend(group(
+        *b"WATR",
+        0,
+        &named(
+            b"WATR",
+            SINK_WATER,
+            "TestWater",
+            &sub(b"XNAM", &DRINK_SPELL.to_le_bytes()),
+        ),
+    ));
+    let effect = |flags: u32, actor_value: i32| {
+        let mut data = vec![0u8; 72];
+        data[0..4].copy_from_slice(&flags.to_le_bytes());
+        data[16..20].copy_from_slice(&(-1i32).to_le_bytes());
+        data[68..72].copy_from_slice(&actor_value.to_le_bytes());
+        sub(b"DATA", &data)
+    };
+    let mut effects = named(b"MGEF", DRINK_RADS, "TestDamageRads", &effect(0x04, 54));
+    effects.extend(named(b"MGEF", DRINK_HEALTH, "TestRestoreHealth", &effect(0, 16)));
+    plugin.extend(group(*b"MGEF", 0, &effects));
+    let efit = |magnitude: u32, actor_value: i32| {
+        let mut d = magnitude.to_le_bytes().to_vec();
+        d.extend([0u8; 12]);
+        d.extend(actor_value.to_le_bytes());
+        sub(b"EFIT", &d)
+    };
+    let mut drink = sub(b"SPIT", &[0u8; 16]);
+    drink.extend(sub(b"EFID", &DRINK_RADS.to_le_bytes()));
+    drink.extend(efit(6, 54));
+    drink.extend(sub(b"EFID", &DRINK_HEALTH.to_le_bytes()));
+    drink.extend(efit(24, 16));
+    plugin.extend(group(
+        *b"SPEL",
+        0,
+        &named(b"SPEL", DRINK_SPELL, "TestSinkDrink", &drink),
+    ));
     plugin.extend(group(
         *b"CONT",
         0,
@@ -526,6 +589,37 @@ pub fn functions(tag: &str) -> TempData {
         [0.0; 3],
         "LockedDoorRef",
         &sub(b"XLOC", &xloc),
+    ));
+    refs.extend(thing(
+        b"REFR",
+        SWITCH_REF,
+        SWITCH,
+        [500.0, 300.0, 0.0],
+        [0.0; 3],
+        "SwitchRef",
+        &[],
+    ));
+    let mut linked = sub(b"XAPD", &[1]);
+    let mut xapr = SWITCH_REF.to_le_bytes().to_vec();
+    xapr.extend(0.0f32.to_le_bytes());
+    linked.extend(sub(b"XAPR", &xapr));
+    refs.extend(thing(
+        b"REFR",
+        SWITCHED_DOOR_REF,
+        DOOR,
+        [600.0, 300.0, 0.0],
+        [0.0; 3],
+        "SwitchedDoorRef",
+        &linked,
+    ));
+    refs.extend(thing(
+        b"REFR",
+        SINK_REF,
+        SINK,
+        [400.0, 300.0, 0.0],
+        [0.0; 3],
+        "SinkRef",
+        &[],
     ));
     refs.extend(thing(
         b"ACRE",

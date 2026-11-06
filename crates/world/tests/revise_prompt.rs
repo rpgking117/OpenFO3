@@ -69,7 +69,7 @@ impl Fixture {
             })
             .collect();
         let mut runner = Runner::new(&self.order, &self.cache, state);
-        refs.place_moved(&mut runner, &moved);
+        refs.place_moved(&mut runner, &moved, |_| {});
         runner.update(1.0 / 30.0);
         let feet = runner.state.player_position.unwrap();
         refs.frame(&mut runner, &[(PLAYER_REF, feet)]);

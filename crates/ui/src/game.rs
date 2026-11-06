@@ -479,6 +479,51 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sAutosaveAbbrev", "AUTO"),
     ("sQuicksaveAbbrev", "QUICK"),
     ("sDefaults", "Defaults"),
+    // Fallout 3's settings pages (`00681fc8`; the setting objects at
+    // `00f64884` .. `00f64b6c`, the values' labels `00f47cd0` .. `00f64b0c`).
+    // Fallout3.esm sets none of them.
+    ("sDifficulty", "Difficulty"),
+    ("sSaveOnRest", "Save On Rest"),
+    ("sSaveOnWait", "Save On Wait"),
+    ("sSaveOnTravel", "Save On Travel"),
+    ("sBrightness", "Brightness"),
+    ("sHUDOpacity", "HUD Opacity"),
+    ("sHUDColor", "HUD Color"),
+    ("sPipboyColor", "Pip-Boy Color"),
+    ("sTextureSize", "Texture Size"),
+    ("sActorFade", "Actor Fade"),
+    ("sItemFade", "Item Fade"),
+    ("sObjectFade", "Object Fade"),
+    ("sGrassFade", "Grass Fade"),
+    ("sShadowFade", "Shadow Fade"),
+    ("sLightFade", "Light Fade"),
+    ("sSpecularityFade", "Specularity Fade"),
+    ("sObjectLODFade", "Object LOD Fade"),
+    ("sTreeLODFade", "Tree LOD Fade"),
+    ("sCrosshair", "Crosshair"),
+    ("sDialogSubtitles", "Dialog Subtitles"),
+    ("sGeneralSubtitles", "General Subtitles"),
+    ("sCameraPitch", "Invert Y"),
+    ("sMouseSensitivity", "Mouse Sensitivity"),
+    ("sDisableXBoxController", "360 Controller"),
+    ("sRumble", "Vibration"),
+    ("sLockLevelNameVeryEasy", "Very Easy"),
+    ("sLockLevelNameEasy", "Easy"),
+    ("sNormal", "Normal"),
+    ("sLockLevelNameHard", "Hard"),
+    ("sLockLevelNameVeryHard", "Very Hard"),
+    ("sLarge", "Large"),
+    ("sMedium", "Medium"),
+    ("sSmall", "Small"),
+    // The colours: Green and Blue are upper-cased as the menu is made
+    // (`00681d60`); AMBER and WHITE are stored so.
+    ("sGreen", "Green"),
+    ("sBlue", "Blue"),
+    ("sAmber", "AMBER"),
+    ("sWhite", "WHITE"),
+    // The help's key names (`00cd9b30`).
+    ("sDeviceMouse", "Mouse"),
+    ("sDeviceKeyboard", "Keyboard"),
 ];
 
 /// A text setting's exe default (see [`EXE_TEXT_SETTINGS`]), name compared

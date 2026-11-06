@@ -255,6 +255,8 @@ pub struct ActivatorUsed {
     /// How it moved, for one that opens and closes by its model's
     /// sequences; `None` for one without them.
     pub moved: Option<Activated>,
+    /// The drink spell cast on whoever used it, for one with water.
+    pub drank: Option<FormId>,
 }
 
 /// An activator's own activation, once its script has let it happen (its
@@ -266,10 +268,20 @@ pub struct ActivatorUsed {
 /// a `Close` sequence (here: lengths known, [`GameState::door_lengths`]),
 /// and not while either plays; it flips the open flag and plays the one for
 /// the new state, as a door's ([`activate`]). Vault 101's gear door opens
-/// this way when the vault door console's script activates it. Not carried
-/// out: the trespass check when an actor uses it (`004f3990` →
-/// `0070c600`), its water type's activation (`WNAM`, +0x7c: drinking) and
-/// its radio station (`RNAM`, +0x80, `006c3bb0`).
+/// this way when the vault door console's script activates it.
+///
+/// An activator with water (`WNAM`, +0x7c) has its water type's activation
+/// (`TESWaterForm` slot 0x49, `004fe520`): the water's drink spell (`XNAM`,
+/// +0x178) cast by the drinker on itself, at the share the drinker's perks
+/// say (entry point 0x1A: Lead Belly × 0.5).
+///
+/// Its radio (`RNAM`, +0x80, `006c3bb0`) follows the open state:
+/// [`crate::ref_scripts::RefScripts`].
+///
+/// Not carried out: the drinking idle (the activation's first step, which
+/// refuses a drink when the idle can't start, and for the player goes to
+/// the third-person camera) and the trespass check when an actor uses it
+/// (`004f3990` → `0070c600`).
 pub fn activate_activator(
     order: &LoadOrder,
     state: &mut GameState,
@@ -281,7 +293,26 @@ pub fn activate_activator(
     let moved = base
         .filter(|b| state.door_lengths.contains_key(b))
         .map(|_| activate(order, state, activator, by));
-    ActivatorUsed { sound, moved }
+    let drank = base
+        .and_then(|b| crate::activation::drink_spell(order, b))
+        .zip(by.filter(|&w| crate::activation::is_actor(order, w)))
+        .map(|(spell, who)| {
+            let share = crate::perks::apply_for(
+                order,
+                state,
+                who,
+                crate::perks::entry::ADJUST_DRINKING_RADIATION,
+                1.0,
+                &[],
+            );
+            crate::magic::cast_scaled(order, state, who, spell, who, share);
+            spell
+        });
+    ActivatorUsed {
+        sound,
+        moved,
+        drank,
+    }
 }
 
 /// Whether a reference is a placed activator (`ACTI`).

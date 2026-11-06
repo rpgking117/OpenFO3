@@ -53,8 +53,9 @@ EXCLUDE = [
     (r"^crates/engine(-[^/]+)?/", "the New Vegas engine translated from FalloutNV.exe"),
     (r"^crates/host/", "runs that translated engine on FalloutNV.exe"),
     (r"^crates/play-patch/", "patches to the translated engine"),
-    # Except the frame map the world crate's tests check its frame order against.
-    (r"^research/(?!engine-map/frame(_wiring)?\.tsv$)", "New Vegas research data"),
+    # The world crate's frame tests check against research/engine-map/frame.tsv
+    # where it's there, and skip without it.
+    (r"^research/", "research data read from the games' programs"),
     (r"^scripts/", "New Vegas measurement and packaging scripts"),
     (r"^characters/", "New Vegas (Dead Money) character notes"),
     (r"^distribution/(?!README\.txt$)", "the earlier package files; OpenFO3's notices are made by the notices step"),
@@ -229,8 +230,9 @@ def source():
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         count += 1
-    # The project's tools.
-    for root, dirs, files in os.walk(PROJECT / "tools"):
+    # The project's tools: only the release scripts. The rest work on the
+    # game's program and a decompile of it, and aren't published.
+    for root, dirs, files in os.walk(PROJECT / "tools" / "release"):
         dirs[:] = [d for d in dirs if d not in TOOLS_SKIP]
         for f in files:
             if f in TOOLS_SKIP or f.endswith(".pyc"):

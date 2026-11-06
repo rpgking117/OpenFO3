@@ -744,6 +744,13 @@ pub fn doors(
                 true,
             ) {
                 let player = world::dialogue::PLAYER_REF;
+                // Its children too (`004ed0d0`).
+                world::activation::activate_children(
+                    &game.0.order,
+                    &scripts.0,
+                    &mut state.0,
+                    reference,
+                );
                 match crate::doors::activate(
                     &game.0.order,
                     &mut state.0,

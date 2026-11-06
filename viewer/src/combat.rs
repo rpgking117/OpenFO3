@@ -487,7 +487,7 @@ pub(crate) fn meetable(
     r: &world::scripting::Interactive,
 ) -> bool {
     r.script.is_some()
-        && r.trigger.is_none()
+        && !r.is_only_trigger()
         && world::enabled_now(order, r.reference, &state.disabled)
         // A body its critical stage ended has its collision taken out
         // (`008a1a70` → `0057b520(0)`) and its 3D culled (`00450f90(1)`,

@@ -1,6 +1,6 @@
 [package]
 name = "nv-viewer"
-version = "1.0.0"
+version = "1.0.1"
 description = "OpenFO3: an open-source engine for Fallout 3 (Bevy)"
 edition = "2021"
 license = "GPL-3.0-or-later"

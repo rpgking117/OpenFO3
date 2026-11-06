@@ -456,6 +456,9 @@ fn finds_a_cells_scripted_objects_and_aims_at_them() {
     doc.trigger = Some(world::scripting::TriggerBox {
         half: [20.0, 10.0, 5.0],
         shape: 1,
+        center: [0.0; 3],
+        axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        in_solid_model: false,
     });
     assert!(doc.contains([100.0, 15.0, 0.0]));
     assert!(!doc.contains([115.0, 0.0, 0.0]));
@@ -2508,4 +2511,14 @@ fn a_quest_vm_runs_the_quests_it_takes_and_declines_the_rest() {
     assert_eq!(vm.seen.len(), 1);
     assert_eq!(var(&state, "nruns"), 1.0);
     assert_eq!(var(&state, "fseen"), 0.0625);
+}
+
+/// Every activator a name makes usable is listed, script or not (`004ef470`):
+/// a sink, a radio, a switch.
+#[test]
+fn entry_point_26_is_the_drink() {
+    assert_eq!(
+        world::perks::ENTRY_POINT_NAMES[usize::from(world::perks::entry::ADJUST_DRINKING_RADIATION)],
+        "Adjust Drinking Radiation"
+    );
 }

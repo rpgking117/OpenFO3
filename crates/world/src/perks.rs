@@ -132,6 +132,10 @@ pub mod entry {
     pub const CALCULATE_MY_CRITICAL_HIT_CHANCE: u8 = 1;
     /// The weapon's critical damage on a critical (`009b7060`).
     pub const CALCULATE_MY_CRITICAL_HIT_DAMAGE: u8 = 2;
+    /// What a drink from an activator's water does, as a share (Lead Belly
+    /// × 0.5: the drink spell's effectiveness, `TESWaterForm` slot 0x49,
+    /// `004fe520`).
+    pub const ADJUST_DRINKING_RADIATION: u8 = 26;
     /// A mine's chance (from 100) of going off for the player near it
     /// (`009c39e0`: the player, the mine's projectile; Light Step sets 0).
     pub const CALCULATE_MINE_EXPLODE_CHANCE: u8 = 4;

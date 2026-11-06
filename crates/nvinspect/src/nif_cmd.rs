@@ -764,6 +764,34 @@ fn collision_summary(out: &mut impl Write, nif: &Nif, scene: &nif::Scene) -> Res
             return Ok(());
         }
     };
+    for phantom in &collision.phantoms {
+        let corners = match &phantom.shape {
+            nif::CollisionShape::Convex { vertices, .. } => vertices.clone(),
+            nif::CollisionShape::Triangles { vertices, .. } => vertices.clone(),
+            nif::CollisionShape::Sphere { center, radius } => {
+                vec![center.map(|c| c - radius), center.map(|c| c + radius)]
+            }
+            nif::CollisionShape::Capsule { a, b, radius } => vec![
+                [0, 1, 2].map(|k| a[k].min(b[k]) - radius),
+                [0, 1, 2].map(|k| a[k].max(b[k]) + radius),
+            ],
+        };
+        let lo = [0, 1, 2].map(|k| corners.iter().map(|c| c[k]).fold(f32::INFINITY, f32::min));
+        let hi = [0, 1, 2].map(|k| corners.iter().map(|c| c[k]).fold(f32::NEG_INFINITY, f32::max));
+        writeln!(
+            out,
+            "\nPhantom:      layer {} ({}), {} corners, from ({:.1}, {:.1}, {:.1}) to ({:.1}, {:.1}, {:.1})",
+            phantom.layer,
+            nif::collision::layers::name(phantom.layer),
+            corners.len(),
+            lo[0],
+            lo[1],
+            lo[2],
+            hi[0],
+            hi[1],
+            hi[2],
+        )?;
+    }
     if collision.parts.is_empty() && collision.unhandled.is_empty() {
         return Ok(());
     }

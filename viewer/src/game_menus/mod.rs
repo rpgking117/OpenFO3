@@ -112,6 +112,30 @@ pub struct Screen {
     atlases: HashMap<String, Option<ui::Atlas>>,
     /// `nif` tiles' models (the start menu's pause background).
     models: HashMap<String, Option<Vec<start::ModelPiece>>>,
+    /// Which build this is ([`next_build`]). The menus are built again when
+    /// the window's size changes; anything outside that keeps a tile of
+    /// them (the loading screen) checks this first, as the old tiles mean
+    /// nothing in the new tree.
+    pub built: u32,
+}
+
+/// Menu units per pixel of the window as it is now: the menus are drawn at the
+/// window's size now (the HUD's layer, `hud`), while open menus keep the layout
+/// they were built with (`screen`). Read on the built size instead, the pointer
+/// ran at 2560/2880 of the mouse in a borderless window at 150 % scaling (the
+/// menus built while the window was 1920 × 1080 × 1.5), and the main menu's list
+/// at the right edge couldn't be reached.
+fn pointer_scale(screen: &ui::Screen, window_height: Option<u32>) -> f32 {
+    match window_height {
+        Some(h) if h > 0 => screen.height() / h as f32,
+        _ => screen.resolution_converter(),
+    }
+}
+
+/// A number for each build of the menus.
+fn next_build() -> u32 {
+    static BUILDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// How a closed menu leaves (`Screen::close`).
@@ -294,6 +318,7 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<asks::PipboyAsks>()
             .init_resource::<StartMenu>()
             .init_resource::<FixedPointer>()
+            .init_resource::<GameCursorShown>()
             .init_resource::<start::GameSettings>()
             .init_resource::<start::SaveFiles>()
             .init_resource::<FixedClicks>()
@@ -491,6 +516,11 @@ fn answer_box(ui: &mut ui::Ui, top: &mut OpenMenu, answers: &mut AnswerBoxes, no
 /// 1080 picture (for screenshots, which have no mouse).
 #[derive(Resource, Default)]
 pub struct FixedPointer(pub Option<(f32, f32)>);
+
+/// The menus draw their own pointer this frame (`draw_menus`): the system's
+/// is hidden then (`grab_cursor`), as only the game's shows in the original.
+#[derive(Resource, Default)]
+pub struct GameCursorShown(pub bool);
 
 /// `--menu-click S,...`: left clicks at these seconds (pressed one frame,
 /// let go the next), for testing with `FixedPointer`.
@@ -748,6 +778,7 @@ impl Screen {
             sizes: HashMap::new(),
             atlases: HashMap::new(),
             models: HashMap::new(),
+            built: next_build(),
         }
     }
 
@@ -1254,8 +1285,8 @@ pub(crate) fn run_open_menus(
         };
         input.clicks.release = press;
         // The pointer, in menu units.
-        let k = ui.screen_size.resolution_converter();
         let window = input.windows.single().ok();
+        let k = pointer_scale(&ui.screen_size, window.map(|w| w.physical_height()));
         let rendered = is_rendered(top) && input.rendered.prepare(&game.0, input.hud.is_some());
         let mut race_button = None;
         let mut power_button = false;
@@ -1856,8 +1887,10 @@ pub(crate) fn draw_menus(
     mut rendered: ResMut<crate::rendered_terminal::RenderedTerminal>,
     hud: Option<Res<crate::hud::HudLayer>>,
     mut title: ResMut<title::TitleScreen>,
+    mut cursor_shown: ResMut<GameCursorShown>,
 ) {
     let rendered_on = rendered.prepare(&game.0, hud.is_some());
+    let mut drew_cursor = false;
     let mut terminal_items: Vec<DrawItem> = Vec::new();
     let terminal_open = menus
         .screen
@@ -1873,6 +1906,9 @@ pub(crate) fn draw_menus(
         }
     }
     let Some(screen) = menus.screen.as_deref_mut() else {
+        if cursor_shown.0 {
+            cursor_shown.0 = false;
+        }
         rendered.items.clear();
         if !draw.0.is_empty() {
             draw.0.clear();
@@ -1975,7 +2011,10 @@ pub(crate) fn draw_menus(
                 .as_ref()
                 .is_some_and(|p| p.open && !p.cursor_hidden());
         if let Some(cursor) = screen.cursor {
-            let k = screen.ui.screen_size.resolution_converter();
+            let k = pointer_scale(
+                &screen.ui.screen_size,
+                windows.single().ok().map(|w| w.physical_height()),
+            );
             let at = match fixed.0 {
                 Some((x, y)) => Some(Vec2::new(x, y) * (960.0 / 1080.0) / k),
                 None => windows
@@ -1987,6 +2026,7 @@ pub(crate) fn draw_menus(
             let hidden = matches!(screen.open.last(), Some(OpenMenu::Roulette(_)));
             match (at, wanted && !hidden) {
                 (Some(p), true) => {
+                    drew_cursor = true;
                     screen.ui.set_number(cursor, t::X, p.x * k);
                     screen.ui.set_number(cursor, t::Y, p.y * k);
                     screen.ui.set_number(cursor, t::VISIBLE, 1.0);
@@ -1998,6 +2038,7 @@ pub(crate) fn draw_menus(
         // The loading screen while a place loads, over everything.
         title::loading_draws(
             &mut screen.ui,
+            screen.built,
             &game.0,
             &mut title,
             &mut items,
@@ -2006,6 +2047,9 @@ pub(crate) fn draw_menus(
         );
     }
     let _ = kind::IMAGE;
+    if cursor_shown.0 != drew_cursor {
+        cursor_shown.0 = drew_cursor;
+    }
     if rendered.items != terminal_items {
         rendered.items = terminal_items;
     }
@@ -2042,6 +2086,30 @@ mod tests {
         assert_eq!(startup_keys.pop_due(2.0, None).as_deref(), Some("enter"));
     }
 
+    /// Menus built for 2880 × 1620 in a window now 2560 × 1440: the pointer is
+    /// read on the window's scale, as the menus are drawn.
+    #[test]
+    fn the_pointer_follows_the_window_as_it_is_now() {
+        let built = ui::Screen {
+            width_px: 2880,
+            height_px: 1620,
+            safe_x: 15.0,
+            safe_y: 15.0,
+        };
+        let k = pointer_scale(&built, Some(1440));
+        assert!((2560.0 * k - built.width()).abs() < 0.01, "{}", 2560.0 * k);
+        assert!((k - built.height() / 1440.0).abs() < 1e-6);
+        // No window: the built size.
+        assert_eq!(pointer_scale(&built, None), built.resolution_converter());
+    }
+
+    /// Each build of the menus has its own number, so what keeps a tile of
+    /// them can tell when it's gone (`title::current_menu`).
+    #[test]
+    fn every_build_of_the_menus_has_its_own_number() {
+        assert_ne!(bare().built, bare().built);
+    }
+
     /// The menus with no game files: a 1920 × 1080 screen.
     fn bare() -> Screen {
         let ui = ui::Ui::new(
@@ -2072,6 +2140,7 @@ mod tests {
             sizes: HashMap::new(),
             atlases: HashMap::new(),
             models: HashMap::new(),
+            built: next_build(),
         }
     }
 

@@ -266,7 +266,7 @@ mod tests {
     /// `frame.tsv`'s row under it (`0086f39e`).
     #[test]
     fn the_poll_is_step_33() {
-        if crate::frame::frame_tsv().is_none() {
+if crate::frame::frame_tsv().is_none() {
             return;
         }
         let i = poll_step();

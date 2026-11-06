@@ -1,6 +1,6 @@
 [package]
 name = "openfo3-launcher"
-version = "1.0.0"
+version = "1.0.1"
 description = "OpenFO3's launcher: finds your Fallout 3, picks plugins and display settings, starts the game"
 authors = ["RPGKING The Mad Modder"]
 edition = "2021"

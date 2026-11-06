@@ -221,7 +221,7 @@ mod tests {
     /// step that calls the function (none is left unmatched).
     #[test]
     fn every_modelled_call_is_matched() {
-        if crate::frame::frame_tsv().is_none() {
+if crate::frame::frame_tsv().is_none() {
             return;
         }
         let rows = rows();
@@ -247,7 +247,7 @@ mod tests {
     /// (set `NVRS_WRITE_FRAME_WIRING=1` to write it).
     #[test]
     fn frame_wiring_tsv_is_current() {
-        if crate::frame::frame_tsv().is_none() {
+if crate::frame::frame_tsv().is_none() {
             return;
         }
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -270,7 +270,7 @@ mod tests {
     /// open; the systems and partly wired calls are named.
     #[test]
     fn phase_1_gate() {
-        if crate::frame::frame_tsv().is_none() {
+if crate::frame::frame_tsv().is_none() {
             return;
         }
         let t = table();

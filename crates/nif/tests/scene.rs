@@ -1642,3 +1642,64 @@ fn a_models_own_controllers_play_as_one_sequence() {
     let still = Nif::parse(testdata::impacts::animated_effect_nif(&[])).unwrap();
     assert!(still.own_controllers().unwrap().is_none());
 }
+
+/// A trigger activator's model (`triggers\\trigplayerwall01.nif`'s blocks):
+/// its volume is a phantom's box, and nothing in it is solid.
+#[test]
+fn reads_a_trigger_phantom_as_not_solid() {
+    use nif::CollisionShape;
+    let mut b = Builder::new();
+    b.reserve(4);
+    let mut root = b.node("Scene Root", 0x0008_000E, &NO_XF, &[], &[]);
+    root[72..76].copy_from_slice(&1i32.to_le_bytes());
+    b.set(0, "BSFadeNode", root);
+    b.set(1, "bhkSPCollisionObject", collision_object(0, 2));
+    // Shape, the filter (layer 12), world object info and unused, then
+    // the matrix's columns: no turn, 1 Havok unit up.
+    let mut phantom = 3i32.to_le_bytes().to_vec();
+    phantom.extend([12u8, 0, 0, 0]);
+    phantom.extend([0u8; 28]);
+    f32s(
+        &mut phantom,
+        &[
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+        ],
+    );
+    b.set(2, "bhkSimpleShapePhantom", phantom);
+    let mut boxed = vec![0u8; 16];
+    f32s(&mut boxed, &[1.0, 0.5, 0.25, 0.0]);
+    b.set(3, "bhkBoxShape", boxed);
+    let nif = Nif::parse(b.build()).unwrap();
+    let collision = nif.placed_collision().unwrap();
+    assert!(collision.parts.is_empty(), "{:?}", collision.parts);
+    assert!(collision.unhandled.is_empty(), "{:?}", collision.unhandled);
+    assert_eq!(collision.phantoms.len(), 1);
+    let phantom = &collision.phantoms[0];
+    assert_eq!(phantom.layer, 12);
+    assert!(nif::collision::layers::is_trigger(phantom.layer));
+    let CollisionShape::Convex { vertices, .. } = &phantom.shape else {
+        panic!("{:?}", phantom.shape);
+    };
+    assert_eq!(vertices.len(), 8);
+    for (at, want) in [
+        (0, [-H, -0.5 * H, 0.75 * H]),
+        (7, [H, 0.5 * H, 1.25 * H]),
+    ] {
+        for k in 0..3 {
+            assert!((vertices[at][k] - want[k]).abs() < 1e-4, "{:?}", vertices[at]);
+        }
+    }
+}
+
+/// The layers the trap listener takes (`005719c0`), and not the others that
+/// carry phantoms in the game's models.
+#[test]
+fn trigger_layers_are_the_trap_listeners() {
+    use nif::collision::layers::is_trigger;
+    for layer in [12, 22, 24] {
+        assert!(is_trigger(layer), "{layer}");
+    }
+    for layer in [4, 11, 15, 21] {
+        assert!(!is_trigger(layer), "{layer}");
+    }
+}

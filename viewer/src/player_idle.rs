@@ -267,6 +267,23 @@ pub fn animate(
             idle.hand_follow,
             true,
         );
+        // `OF3_CAMERA_LOG`: the camera bone, the pivot, the feet and the eye,
+        // about once a second (checking a scene's view against the game's).
+        if std::env::var_os("OF3_CAMERA_LOG").is_some()
+            && (time.elapsed_secs() % 1.0) < time.delta_secs()
+        {
+            let r = &pose[camera].rotation;
+            println!(
+                "Camera1st {:?} rot [{:.2} {:.2} {:.2} / {:.2} {:.2} {:.2} / {:.2} {:.2} {:.2}] pivot {:?} feet {:?} heading {:.2} pitch {:.2} -> eye {:?}",
+                pose[camera].translation,
+                r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2],
+                pose[looking].translation,
+                player.character.feet,
+                -input.yaw,
+                input.pitch,
+                transform_in_game.translation
+            );
+        }
         *transform = camera_transform(&transform_in_game);
     }
 }

@@ -1670,7 +1670,7 @@ mod tests {
     /// it, in the same order (the model leaves queries out).
     #[test]
     fn direct_calls_are_in_frame_tsv_in_order() {
-        if crate::frame::frame_tsv().is_none() {
+if crate::frame::frame_tsv().is_none() {
             return;
         }
         for f in &FUNCTIONS {

@@ -1092,3 +1092,59 @@ fn loads_can_be_kept_to_their_places_own_screens() {
     run(&order, &scripts, &mut state, "SetLocationSpecificLoadScreensOnly 0");
     assert!(!state.more.location_screens_only);
 }
+
+/// A sink (a named activator without a script): listed for the player to use,
+/// worded "Activate" with its numbers, and its water's spell cast on whoever
+/// drinks (`004b3aa0`, `004fe520`, `0064a130`).
+#[test]
+fn a_sink_is_there_to_use_and_a_drink_heals_and_irradiates() {
+    use world::dialogue::PLAYER_REF;
+    let (_data, order) = order("fn-sink");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let sink = FormId(SINK_REF);
+    let listed = world::scripting::interactive_reference(&order, sink).unwrap();
+    assert_eq!(listed.script, None);
+    assert_eq!(listed.name.as_deref(), Some("Sink"));
+    let info = world::activation::info(&order, &state, sink).unwrap();
+    assert_eq!(info.action.as_deref(), Some("Activate"));
+    assert_eq!(info.target, "Sink");
+    let shown = info.weight_value.unwrap();
+    assert_eq!((shown.weight.as_str(), shown.value.as_str()), ("24", "6"));
+
+    run(&order, &scripts, &mut state, "player.DamageActorValue Health 40");
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    let health = q(&mut state, "player.GetActorValue Health");
+    let rads = q(&mut state, "player.GetActorValue RadiationRads");
+    let used = world::doors::activate_activator(&order, &mut state, sink, Some(PLAYER_REF));
+    assert_eq!(used.drank, Some(FormId(DRINK_SPELL)));
+    assert_eq!(q(&mut state, "player.GetActorValue Health"), health + 24.0);
+    assert_eq!(q(&mut state, "player.GetActorValue RadiationRads"), rads + 6.0);
+
+    // Used by nobody in particular (a script's plain `Activate`): no drink.
+    let used = world::doors::activate_activator(&order, &mut state, sink, None);
+    assert_eq!(used.drank, None);
+}
+
+/// A switch's door (`XAPR`): activating the parent activates the child, by it
+/// (`004ed0d0`), and the child can say only parents may (`XAPD`, `0040cb10`).
+#[test]
+fn a_parent_activates_its_children() {
+    let (_data, order) = order("fn-activate-parents");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let (switch, door) = (FormId(SWITCH_REF), FormId(SWITCHED_DOOR_REF));
+    assert!(world::activation::parent_only(&order, door));
+    assert!(!world::activation::parent_only(&order, switch));
+    world::activation::activate_children(&order, &scripts, &mut state, door);
+    assert!(state.events.is_empty(), "the door has no children");
+    world::activation::activate_children(&order, &scripts, &mut state, switch);
+    assert!(
+        state.events.iter().any(|e| matches!(
+            e,
+            world::scripting::Event::Activate { what, by } if *what == door && *by == Some(switch)
+        )),
+        "{:?}",
+        state.events
+    );
+}

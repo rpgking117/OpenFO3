@@ -783,6 +783,7 @@ pub(crate) fn frame_tsv() -> Option<&'static str> {
 mod tests {
     use super::*;
 
+
     fn index(address: u32, nth: usize) -> usize {
         STEPS
             .iter()
@@ -799,10 +800,10 @@ mod tests {
 
     #[test]
     fn order_is_frame_tsv_depth_1() {
-        let mut rows = Vec::new();
-        let Some(tsv) = crate::frame::frame_tsv() else {
+        let Some(tsv) = frame_tsv() else {
             return;
         };
+        let mut rows = Vec::new();
         for line in tsv.lines() {
             if line.starts_with('#') || line.starts_with("seq\t") {
                 continue;

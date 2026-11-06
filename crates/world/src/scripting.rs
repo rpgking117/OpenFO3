@@ -1624,10 +1624,127 @@ pub struct Interactive {
 /// taken as half the box's width, depth and height around the
 /// reference's position, turned by its rotation (a guess at their
 /// meaning), times its scale (`XSCL`).
+///
+/// A reference without `XPRM` has the phantom its model carries, when one is
+/// on a trigger layer ([`TriggerBox::from_model`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TriggerBox {
     pub half: [f32; 3],
     pub shape: u32,
+    /// Its centre in the reference's own axes (a model's phantom can stand
+    /// off its origin; `XPRM` volumes are centred).
+    pub center: [f32; 3],
+    /// Its own axes in the reference's (a capsule runs along the third).
+    pub axes: [[f32; 3]; 3],
+    /// The volume comes with a model that also has solid collision: the
+    /// object itself can still be looked at and used.
+    pub in_solid_model: bool,
+}
+
+/// The shapes of [`TriggerBox::shape`]; `XPRM` gives 1 box, 2 sphere and 3
+/// portal box.
+pub const TRIGGER_SPHERE: u32 = 2;
+pub const TRIGGER_CAPSULE: u32 = 4;
+
+const IDENTITY_AXES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+impl TriggerBox {
+    /// The volume of a model's trigger phantom, in the model's space: the
+    /// trap listener makes a trigger of any phantom on a trigger layer that
+    /// belongs to a reference (`TESTrapListener`, `005719c0`). `None` when
+    /// the model has none. The game's models have one each, a box, sphere
+    /// or capsule (`nvinspect <Data> collision`).
+    pub fn from_model(collision: &nif::Collision) -> Option<TriggerBox> {
+        let part = collision
+            .phantoms
+            .iter()
+            .find(|p| nif::collision::layers::is_trigger(p.layer))?;
+        let in_solid_model = !collision.parts.is_empty();
+        let volume = |half, shape, center, axes| TriggerBox {
+            half,
+            shape,
+            center,
+            axes,
+            in_solid_model,
+        };
+        match &part.shape {
+            nif::CollisionShape::Sphere { center, radius } => Some(volume(
+                [*radius; 3],
+                TRIGGER_SPHERE,
+                *center,
+                IDENTITY_AXES,
+            )),
+            nif::CollisionShape::Capsule { a, b, radius } => {
+                let along = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let length = along.iter().map(|v| v * v).sum::<f32>().sqrt();
+                if length <= 0.0 {
+                    return None;
+                }
+                Some(volume(
+                    [*radius, *radius, length / 2.0],
+                    TRIGGER_CAPSULE,
+                    [0, 1, 2].map(|i| (a[i] + b[i]) / 2.0),
+                    [
+                        IDENTITY_AXES[0],
+                        IDENTITY_AXES[1],
+                        along.map(|v| v / length),
+                    ],
+                ))
+            }
+            // A box's corners in `nif::collision`'s order: bit 0 of the
+            // index is its first axis, bit 1 its second, bit 2 its third.
+            nif::CollisionShape::Convex { vertices, .. } if vertices.len() == 8 => {
+                let edge = |to: usize| [0, 1, 2].map(|i| vertices[to][i] - vertices[0][i]);
+                let lengths = [1, 2, 4].map(|to| {
+                    edge(to).iter().map(|v| v * v).sum::<f32>().sqrt()
+                });
+                if lengths.iter().any(|l| *l <= 0.0) {
+                    return None;
+                }
+                let mut center = [0.0f32; 3];
+                for v in vertices {
+                    for i in 0..3 {
+                        center[i] += v[i] / 8.0;
+                    }
+                }
+                let axis = |k: usize, to: usize| edge(to).map(|v| v / lengths[k]);
+                Some(volume(
+                    lengths.map(|l| l / 2.0),
+                    1,
+                    center,
+                    [axis(0, 1), axis(1, 2), axis(2, 4)],
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// The same volume on a reference of this scale (the game clones the
+    /// model's collision scaled, `00c8f2a0`).
+    pub fn scaled(self, scale: f32) -> TriggerBox {
+        TriggerBox {
+            half: self.half.map(|v| v * scale),
+            center: self.center.map(|v| v * scale),
+            ..self
+        }
+    }
+
+    /// Whether a point in the reference's own axes is inside.
+    fn holds(&self, local: [f32; 3]) -> bool {
+        let d = [0, 1, 2].map(|i| local[i] - self.center[i]);
+        let along = self
+            .axes
+            .map(|axis| axis[0] * d[0] + axis[1] * d[1] + axis[2] * d[2]);
+        match self.shape {
+            TRIGGER_SPHERE => d.iter().map(|v| v * v).sum::<f32>() <= self.half[0] * self.half[0],
+            TRIGGER_CAPSULE => {
+                let z = along[2].clamp(-self.half[2], self.half[2]);
+                let near = [0, 1, 2].map(|i| d[i] - self.axes[2][i] * z);
+                near.iter().map(|v| v * v).sum::<f32>() <= self.half[0] * self.half[0]
+            }
+            _ => (0..3).all(|i| along[i].abs() <= self.half[i]),
+        }
+    }
 }
 
 impl Interactive {
@@ -1641,6 +1758,12 @@ impl Interactive {
 
     pub fn is_furniture(&self) -> bool {
         self.kind == FURN
+    }
+
+    /// Whether it is only a trigger volume: nothing to look at or use. A
+    /// model with solid collision besides its phantom can still be used.
+    pub fn is_only_trigger(&self) -> bool {
+        self.trigger.is_some_and(|t| !t.in_solid_model)
     }
 
     /// A computer terminal (`world::terminal`).
@@ -1669,12 +1792,7 @@ impl Interactive {
         let Some(t) = self.trigger else {
             return false;
         };
-        let local = self.local(p, true);
-        if t.shape == 2 {
-            let r = t.half[0];
-            return local.iter().map(|v| v * v).sum::<f32>() <= r * r;
-        }
-        (0..3).all(|i| local[i].abs() <= t.half[i])
+        t.holds(self.local(p, true))
     }
 
     /// How far along a ray (from `eye`, unit `dir`) it meets the object's
@@ -1775,7 +1893,18 @@ fn interactive_from<'a>(
             .get(SCRI)
             .filter(|s| s.data.len() >= 4)
             .map(|s| brr.plugin.to_global(FormId(le_u32(&s.data, 0))));
-        if script.is_none() && !is_item(kind) && kind != CONT && kind != FURN && kind != TERM {
+        // An activator with a name is used whether it has a script or not (a
+        // sink, a switch: `004ef470`); one with a radio plays on its own.
+        let activator = kind == FourCC::new(b"ACTI")
+            && (base_record.full_name().is_some_and(|n| !n.is_empty())
+                || base_record.get(FourCC::new(b"RNAM")).is_some());
+        if script.is_none()
+            && !is_item(kind)
+            && kind != CONT
+            && kind != FURN
+            && kind != TERM
+            && !activator
+        {
             continue;
         }
         let count = record
@@ -1804,6 +1933,9 @@ fn interactive_from<'a>(
             TriggerBox {
                 half: [le_f32(d, 0), le_f32(d, 4), le_f32(d, 8)].map(|v| v * scale),
                 shape: le_u32(d, 28),
+                center: [0.0; 3],
+                axes: IDENTITY_AXES,
+                in_solid_model: false,
             }
         });
         out.push(Interactive {
@@ -5504,5 +5636,120 @@ mod tests {
         // The short name a script writes finds the same function.
         let (i, _) = script::function("moveto").unwrap();
         assert_eq!(script::function_name(i), "MoveToMarker");
+    }
+}
+
+#[cfg(test)]
+mod trigger_volume_tests {
+    use super::*;
+    use nif::{Collision, CollisionPart, CollisionShape, RigidBodyInfo, Transform};
+
+    fn phantom(layer: u8, shape: CollisionShape) -> CollisionPart {
+        CollisionPart {
+            layer,
+            dynamic: false,
+            keyframed: false,
+            node: 0,
+            nodes: Vec::new(),
+            flags: 0,
+            shell: 0.0,
+            shape,
+            material: 0,
+            body: RigidBodyInfo::default(),
+        }
+    }
+
+    fn model(layer: u8, shape: CollisionShape) -> Collision {
+        Collision {
+            phantoms: vec![phantom(layer, shape)],
+            ..Collision::default()
+        }
+    }
+
+    fn placed(trigger: TriggerBox, position: [f32; 3], rotation: [f32; 3]) -> Interactive {
+        Interactive {
+            reference: FormId(1),
+            base: FormId(2),
+            script: Some(FormId(3)),
+            count: 1,
+            position,
+            rotation,
+            scale: 1.0,
+            trigger: Some(trigger),
+            bounds: None,
+            name: None,
+            kind: FourCC::new(b"ACTI"),
+        }
+    }
+
+    /// `TrigPlayerWall01`: a wall off the origin, on a reference turned a
+    /// quarter and scaled up, as MQ01's stage 75 trigger (`00020767`).
+    #[test]
+    fn a_wall_phantom_stands_where_its_turned_reference_puts_it() {
+        let wall = nif::collision::box_shape(
+            [200.0, 10.0, 100.0],
+            &Transform {
+                translation: [0.0, 0.0, 40.0],
+                ..Transform::IDENTITY
+            },
+        );
+        let volume = TriggerBox::from_model(&model(12, wall)).unwrap().scaled(2.0);
+        assert!(!volume.in_solid_model);
+        let quarter = -std::f32::consts::FRAC_PI_2;
+        let r = placed(volume, [1000.0, 0.0, 0.0], [0.0, 0.0, quarter]);
+        // Across its width, now along the world's y, at the height it
+        // stands at (40 x 2 up, 100 x 2 either way).
+        assert!(r.contains([1000.0, 300.0, 100.0]));
+        assert!(r.contains([1000.0, -300.0, 270.0]));
+        assert!(!r.contains([1000.0, 500.0, 100.0]));
+        assert!(!r.contains([1000.0, 0.0, -130.0]));
+        // Its depth, now along the world's x, is 10 x 2 either way.
+        assert!(r.contains([1015.0, 0.0, 100.0]));
+        assert!(!r.contains([1030.0, 0.0, 100.0]));
+    }
+
+    #[test]
+    fn a_sphere_or_capsule_phantom_is_that_shape() {
+        let sphere = CollisionShape::Sphere {
+            center: [0.0, 0.0, 10.0],
+            radius: 5.0,
+        };
+        let v = TriggerBox::from_model(&model(24, sphere)).unwrap();
+        let r = placed(v, [0.0; 3], [0.0; 3]);
+        assert!(r.contains([0.0, 0.0, 14.0]));
+        assert!(!r.contains([0.0, 0.0, 16.0]));
+        assert!(!r.contains([4.0, 4.0, 10.0]));
+        let capsule = CollisionShape::Capsule {
+            a: [0.0; 3],
+            b: [0.0, 0.0, 100.0],
+            radius: 10.0,
+        };
+        let v = TriggerBox::from_model(&model(12, capsule)).unwrap();
+        let r = placed(v, [0.0; 3], [0.0; 3]);
+        assert!(r.contains([0.0, 0.0, 105.0]));
+        assert!(!r.contains([0.0, 0.0, 111.0]));
+        assert!(r.contains([9.0, 0.0, 50.0]));
+        assert!(!r.contains([11.0, 0.0, 50.0]));
+    }
+
+    /// Water and clutter carry phantoms too; those are no triggers. A model
+    /// with solid collision besides its phantom can still be used.
+    #[test]
+    fn only_trigger_layers_make_a_volume() {
+        let sphere = || CollisionShape::Sphere {
+            center: [0.0; 3],
+            radius: 5.0,
+        };
+        assert_eq!(TriggerBox::from_model(&model(11, sphere())), None);
+        assert_eq!(TriggerBox::from_model(&model(4, sphere())), None);
+        assert_eq!(TriggerBox::from_model(&Collision::default()), None);
+        let mut with_body = model(12, sphere());
+        with_body.parts.push(phantom(1, sphere()));
+        let volume = TriggerBox::from_model(&with_body).unwrap();
+        assert!(volume.in_solid_model);
+        let usable = placed(volume, [0.0; 3], [0.0; 3]);
+        assert!(!usable.is_only_trigger());
+        let only = TriggerBox::from_model(&model(12, sphere())).unwrap();
+        assert!(placed(only, [0.0; 3], [0.0; 3]).is_only_trigger());
     }
 }

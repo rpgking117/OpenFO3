@@ -63,8 +63,8 @@ pub const TITLE_FADE_SECONDS: f32 = 1.0;
 pub const CLICK_GAP_MS: f64 = 500.0;
 /// How long "Saving..." stays before the menu closes (`007d5af0`: 3000).
 pub const SAVE_WAIT_MS: f64 = 3000.0;
-/// The game's version on `main_version` (`007cbaf0`).
-pub const VERSION: &str = "1.4.0.525";
+/// The game's version on `main_version` (Fallout3.exe `00681540`).
+pub const VERSION: &str = "1.7.0.3";
 /// Saves the game counts up to (`007d3c70`: "%s %u/%i %s" with 1000).
 pub const MAX_SAVES: usize = 1000;
 
@@ -433,26 +433,25 @@ pub fn user_items(ui: &Ui) -> Vec<Item> {
         default: 0,
     };
     let names = |list: &[&str]| list.iter().map(|n| text(ui, n)).collect::<Vec<_>>();
+    // Fallout 3's colours: Green and Blue upper-cased (`00681d60`).
+    let colours = || {
+        vec![
+            text(ui, "sGreen").to_uppercase(),
+            text(ui, "sBlue").to_uppercase(),
+            text(ui, "sAmber"),
+            text(ui, "sWhite"),
+        ]
+    };
+    // Fallout 3's own list (`00681fc8`): New Vegas's Kill Cam, Hardcore and
+    // True Iron Sights rows aren't in it.
     vec![
-        toggle(
-            "sKillCamMode",
-            KillCam,
-            page::GAMEPLAY,
-            true,
-            85.0,
-            names(&[
-                "sKillCamModeNone",
-                "sKillCamModePlayer",
-                "sKillCamModeCinematic",
-            ]),
-        ),
-        toggle("sHardcore", Hardcore, page::GAMEPLAY, true, 0.0, on_off()),
+        // Type 1 (stops at the ends), 0x50 apart.
         toggle(
             "sDifficulty",
             Difficulty,
             page::GAMEPLAY,
-            true,
-            85.0,
+            false,
+            80.0,
             names(&[
                 "sLockLevelNameVeryEasy",
                 "sLockLevelNameEasy",
@@ -485,14 +484,6 @@ pub fn user_items(ui: &Ui) -> Vec<Item> {
             0.0,
             on_off(),
         ),
-        toggle(
-            "sTrueIronSights",
-            TrueIronSights,
-            page::GAMEPLAY,
-            true,
-            0.0,
-            on_off(),
-        ),
         meter("sBrightness", Brightness, page::DISPLAY, 16),
         meter("sHUDOpacity", HudOpacity, page::DISPLAY, 16),
         toggle(
@@ -501,7 +492,7 @@ pub fn user_items(ui: &Ui) -> Vec<Item> {
             page::DISPLAY,
             true,
             55.0,
-            names(&["sGreen", "sBlue", "sAmber", "sWhite"]),
+            colours(),
         ),
         toggle(
             "sPipboyColor",
@@ -509,7 +500,7 @@ pub fn user_items(ui: &Ui) -> Vec<Item> {
             page::DISPLAY,
             true,
             55.0,
-            names(&["sGreen", "sBlue", "sAmber", "sWhite"]),
+            colours(),
         ),
         toggle(
             "sTextureSize",
@@ -1815,6 +1806,47 @@ mod tests {
         let mut i = Interface::default();
         let menu = m.menu;
         i.click(ui, menu, m, tile, now);
+    }
+
+    /// Every settings page's rows have Fallout 3's labels and values (they
+    /// were blank: New Vegas's rows and texts Fallout3.esm doesn't set).
+    #[test]
+    fn the_settings_pages_are_fallout_3s_and_none_is_blank() {
+        let ui = test_support::ui();
+        let items = user_items(&ui);
+        let on = |p: u32| {
+            items
+                .iter()
+                .filter(|i| i.pages & p != 0)
+                .map(|i| i.label.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            on(page::GAMEPLAY),
+            ["Difficulty", "Save On Rest", "Save On Wait", "Save On Travel"]
+        );
+        assert_eq!(
+            on(page::CONTROLS),
+            ["Invert Y", "Mouse Sensitivity", "360 Controller", "Vibration"]
+        );
+        assert_eq!(on(page::DISPLAY).len(), 17);
+        for i in &items {
+            assert!(!i.label.is_empty(), "{:?}", i.kind);
+            if let Kind::Toggle { values, .. } = &i.kind {
+                assert!(values.iter().all(|v| !v.is_empty()), "{}: {values:?}", i.label);
+            }
+        }
+        let find = |label: &str| items.iter().find(|i| i.label == label).unwrap();
+        assert!(matches!(
+            &find("Difficulty").kind,
+            Kind::Toggle { wrap: false, spacing, values, .. }
+                if *spacing == 80.0 && values[2] == "Normal" && values[4] == "Very Hard"
+        ));
+        assert!(matches!(
+            &find("HUD Color").kind,
+            Kind::Toggle { values, .. } if values == &["GREEN", "BLUE", "AMBER", "WHITE"]
+        ));
+        assert_eq!(VERSION, "1.7.0.3");
     }
 
     /// Settings → Audio: the meters with their values; the right arrow

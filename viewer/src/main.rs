@@ -331,19 +331,9 @@ fn main() {
         window.resolution =
             WindowResolution::new(w as f32, h as f32).with_scale_factor_override(1.0);
     }
-    match args.window_mode.filter(|_| args.screenshot.is_none() && !args.background) {
-        Some(args::WindowChoice::Borderless) => {
-            window.mode = bevy::window::WindowMode::BorderlessFullscreen(
-                bevy::window::MonitorSelection::Current,
-            );
-        }
-        Some(args::WindowChoice::Fullscreen) => {
-            window.mode = bevy::window::WindowMode::Fullscreen(
-                bevy::window::MonitorSelection::Current,
-                bevy::window::VideoModeSelection::Current,
-            );
-        }
-        Some(args::WindowChoice::Windowed) | None => {}
+    if let Some(choice) = args.window_mode.filter(|_| args.screenshot.is_none() && !args.background)
+    {
+        window.mode = choice.mode();
     }
     if args.screenshot.is_some() {
         // The game's own resolution here, so pictures line up pixel for pixel.
@@ -3776,23 +3766,33 @@ fn grab_cursor(
     menus: Option<Res<menus::Menus>>,
     conversation: Option<Res<dialogue::Conversation>>,
     vats: Option<Res<vats::Vats>>,
+    game_cursor: Res<game_menus::GameCursorShown>,
     mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    let grab = !background.0
+    let ours = !background.0 && window.focused;
+    let grab = ours
         && player.walking
-        && window.focused
         && !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref());
+    // In menus the game draws its own pointer: the system's is hidden so
+    // only one shows. Not held in the window: winit pins a pointer that is
+    // both held and hidden to the window's middle pixel (its
+    // `refresh_os_cursor`), and the menus' pointer then couldn't move.
+    let menu_pointer = ours && !grab && game_cursor.0;
     // Windows can't lock the pointer: there it's confined and put back in
     // the middle each frame (the look reads the mouse's own motion).
-    let (mode, visible) = if !grab {
-        (CursorGrabMode::None, true)
-    } else if cfg!(target_os = "windows") {
-        (CursorGrabMode::Confined, false)
+    let (mode, visible) = if grab {
+        if cfg!(target_os = "windows") {
+            (CursorGrabMode::Confined, false)
+        } else {
+            (CursorGrabMode::Locked, false)
+        }
+    } else if menu_pointer {
+        (CursorGrabMode::None, false)
     } else {
-        (CursorGrabMode::Locked, false)
+        (CursorGrabMode::None, true)
     };
     if window.cursor_options.grab_mode != mode || window.cursor_options.visible != visible {
         window.cursor_options.grab_mode = mode;

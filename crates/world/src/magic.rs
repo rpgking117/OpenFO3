@@ -268,6 +268,19 @@ pub fn apply(
     caster: FormId,
     held: bool,
 ) -> Vec<String> {
+    apply_scaled(order, state, target, source, caster, held, 1.0)
+}
+
+/// [`apply`] at an effectiveness: every effect's magnitude times it.
+fn apply_scaled(
+    order: &LoadOrder,
+    state: &mut GameState,
+    target: FormId,
+    source: FormId,
+    caster: FormId,
+    held: bool,
+    effectiveness: f32,
+) -> Vec<String> {
     let mut done = Vec::new();
     let ingestible = crate::items::ingestible_flags(order, source);
     let addiction = spell_type(order, source) == Some(ADDICTION_SPELL_TYPE);
@@ -281,7 +294,7 @@ pub fn apply(
         if !applies {
             continue;
         }
-        let magnitude = ingestible_magnitude(order, state, target, ingestible, &e);
+        let magnitude = ingestible_magnitude(order, state, target, ingestible, &e) * effectiveness;
         let mut duration = e.duration.max(0) as f32;
         if addiction {
             // An addiction's withdrawal lasts as the target's perks'
@@ -679,8 +692,21 @@ pub fn cast(
     spell: FormId,
     caster: FormId,
 ) -> Vec<ActiveEffect> {
+    cast_scaled(order, state, target, spell, caster, 1.0)
+}
+
+/// [`cast`] at an effectiveness (the caster's cast takes one, as a drink's
+/// perk-adjusted share, `004fe520`).
+pub fn cast_scaled(
+    order: &LoadOrder,
+    state: &mut GameState,
+    target: FormId,
+    spell: FormId,
+    caster: FormId,
+    effectiveness: f32,
+) -> Vec<ActiveEffect> {
     let before = state.active_effects.len();
-    add_spell(order, state, target, spell, caster, false);
+    apply_scaled(order, state, target, spell, caster, false, effectiveness);
     let Some(kind) = spell_type(order, spell) else {
         return Vec::new();
     };

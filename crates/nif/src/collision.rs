@@ -98,6 +98,15 @@ pub mod layers {
         "DROPPINGPICK",
     ];
 
+    /// Whether a phantom on this layer is a trigger: the trap listener's
+    /// phantom-added handler (`TESTrapListener`, `005719c0`) makes a trigger
+    /// entry for a phantom whose filter layer (`+0x2c & 0x7f`) is 0xC
+    /// (`TRIGGER`), 0x16 (`ACTORZONE`) or 0x18 (`GASTRAP`) and that belongs
+    /// to a reference; `00571500` takes it out again.
+    pub fn is_trigger(layer: u8) -> bool {
+        matches!(layer & 0x7f, 0xc | 0x16 | 0x18)
+    }
+
     /// A layer's name as the game prints it, or its number.
     pub fn name(layer: u8) -> String {
         NAMES
@@ -269,6 +278,10 @@ pub struct Collision {
     /// Bodies left out because their filter carries the "no collision"
     /// flag ([`layers::NO_COLLISION_FLAG`]).
     pub no_collision: usize,
+    /// Its phantoms (`bhkSPCollisionObject` to `bhkSimpleShapePhantom`):
+    /// shapes that stop nothing and only notice who is in them, such as a
+    /// trigger activator's volume ([`layers::is_trigger`]).
+    pub phantoms: Vec<CollisionPart>,
 }
 
 impl Collision {
@@ -385,8 +398,8 @@ impl Nif {
     }
 
     /// A `bhkCollisionObject`: target node (4), flags (2), body (4).
-    /// Phantoms (`bhkSPCollisionObject`, triggers) and ragdoll blends aren't
-    /// solid and are left out.
+    /// Phantoms (`bhkSPCollisionObject`, triggers) aren't solid and go to
+    /// [`Collision::phantoms`]; ragdoll blends are left out.
     ///
     /// The body sits where its node is, turned as the node is, but not
     /// scaled by the nodes' own scales: a Havok body can't be scaled, and
@@ -408,6 +421,9 @@ impl Nif {
         out: &mut Collision,
     ) -> Result<()> {
         let type_name = self.block_type(index);
+        if type_name == "bhkSPCollisionObject" {
+            return self.phantom_object(index, node_index, node, chain, out);
+        }
         if type_name != "bhkCollisionObject" {
             *out.unhandled.entry(type_name.to_string()).or_default() += 1;
             return Ok(());
@@ -477,6 +493,85 @@ impl Nif {
             body: info,
         };
         self.shape(body.shape, &to_model, &template, 0, out)
+    }
+
+    /// A `bhkSPCollisionObject`: target node (4), flags (2), phantom (4). A
+    /// `bhkSimpleShapePhantom`: shape (4), Havok filter (layer, flags and
+    /// part, group) at 4, world object info (20), unused (8), then a 4x4
+    /// matrix as Havok keeps it (three rotation columns and the
+    /// translation, four floats each). Checked against
+    /// `triggers\\trigplayerwall01.nif`, whose box fills its base's bounds.
+    fn phantom_object(
+        &self,
+        index: usize,
+        node_index: usize,
+        node: &Transform,
+        chain: &[(String, Transform)],
+        out: &mut Collision,
+    ) -> Result<()> {
+        let mut r = Reader::new(self.block_bytes(index), self.blocks()[index].offset);
+        let _target = r.i32("the collision target")?;
+        let flags = r.u16("the collision flags")?;
+        let phantom = r.i32("the phantom")?;
+        let Some(phantom) = self.block_index(phantom) else {
+            return Ok(());
+        };
+        let type_name = self.block_type(phantom);
+        if type_name != "bhkSimpleShapePhantom" {
+            *out.unhandled.entry(type_name.to_string()).or_default() += 1;
+            return Ok(());
+        }
+        let mut r = Reader::new(self.block_bytes(phantom), self.blocks()[phantom].offset);
+        let shape = r.i32("the phantom's shape")?;
+        let layer = r.u8("the collision layer")?;
+        r.take(3, "the filter's other fields")?;
+        r.take(28, "the phantom's world object info")?;
+        let mut columns = [[0.0f32; 4]; 4];
+        for column in &mut columns {
+            for v in column.iter_mut() {
+                *v = r.f32("the phantom's transform")?;
+            }
+        }
+        let local = Transform {
+            rotation: [
+                [columns[0][0], columns[1][0], columns[2][0]],
+                [columns[0][1], columns[1][1], columns[2][1]],
+                [columns[0][2], columns[1][2], columns[2][2]],
+            ],
+            translation: [columns[3][0], columns[3][1], columns[3][2]],
+            scale: 1.0,
+        };
+        let unscaled = Transform {
+            scale: 1.0,
+            ..*node
+        };
+        let scale = Transform {
+            scale: HAVOK_SCALE,
+            ..Transform::IDENTITY
+        };
+        let to_model = unscaled.then_child(&scale).then_child(&local);
+        let template = CollisionPart {
+            layer,
+            dynamic: false,
+            keyframed: false,
+            node: node_index,
+            nodes: chain.to_vec(),
+            flags,
+            shell: 0.0,
+            shape: CollisionShape::Sphere {
+                center: [0.0; 3],
+                radius: 0.0,
+            },
+            material: 0,
+            body: RigidBodyInfo::default(),
+        };
+        let mut shapes = Collision::default();
+        self.shape(shape, &to_model, &template, 0, &mut shapes)?;
+        out.phantoms.append(&mut shapes.parts);
+        for (kind, n) in shapes.unhandled {
+            *out.unhandled.entry(kind).or_default() += n;
+        }
+        Ok(())
     }
 
     /// `bhkRigidBody` / `bhkRigidBodyT` (236 bytes without constraints):

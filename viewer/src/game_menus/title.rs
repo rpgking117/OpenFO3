@@ -81,6 +81,8 @@ pub struct TitleScreen {
     /// start menu): its texts, the loading screens behind its pictures, the
     /// one whose words show and when the statistics last changed.
     in_game: Option<InGameMenu>,
+    /// The menus' build `in_game` was made in (`Screen::built`).
+    in_game_built: u32,
     screens: Vec<world::loading_screens::LoadScreen>,
     shown: Option<usize>,
     stats_at: f64,
@@ -352,7 +354,9 @@ pub(crate) fn title_frame(
                 title.show = None;
                 if let Some(m) = title.in_game.take() {
                     if let Some(screen) = menus.screen.as_deref_mut() {
-                        screen.ui.detach(m.menu);
+                        if screen.built == title.in_game_built {
+                            screen.ui.detach(m.menu);
+                        }
                     }
                 }
                 title.screens.clear();
@@ -539,6 +543,12 @@ fn in_game_texts(
     let values: Vec<u32> = (0..world::stats::NAMES.len())
         .map(|i| world::stats::get(state, i as u8))
         .collect();
+    // The menus were built again (the window's size changed): the loading
+    // menu is made again in them.
+    if title.in_game.is_some() && title.in_game_built != screen.built {
+        title.in_game = None;
+        title.shown = None;
+    }
     if title.in_game.is_none() {
         let mut menu = InGameMenu::new(roller());
         match screen.load(game, loading::FILE, &mut menu) {
@@ -549,6 +559,7 @@ fn in_game_texts(
                 menu.show_progress(&mut screen.ui, objective.as_deref(), level, progress);
                 menu.next_stats(&mut screen.ui, &world::stats::NAMES, &values);
                 title.in_game = Some(menu);
+                title.in_game_built = screen.built;
                 title.stats_at = now;
             }
             Err(e) => {
@@ -616,6 +627,7 @@ fn current_objective(order: &esm::LoadOrder, state: &world::scripting::GameState
 /// has the screen: black, the slideshow and the in-game menu's texts.
 pub(crate) fn loading_draws(
     ui: &mut ui::Ui,
+    built: u32,
     game: &Game,
     title: &mut TitleScreen,
     items: &mut Vec<DrawItem>,
@@ -629,9 +641,11 @@ pub(crate) fn loading_draws(
         show,
         model,
         in_game,
+        in_game_built,
         ..
     } = title;
-    let Some(menu) = in_game.as_ref() else {
+    // Made in an earlier build of the menus: black until it's made again.
+    let Some(menu) = current_menu(in_game.as_ref(), *in_game_built, built) else {
         items.push(black(ui.screen, 1.0e6));
         return;
     };
@@ -645,6 +659,13 @@ pub(crate) fn loading_draws(
         }
     }
     items.extend(ui::draw_list(ui, menu.menu, files, &|_| None));
+}
+
+/// The loading menu, if it was made in this build of the menus (`built`): the
+/// menus are built again when the window's size changes, and a tile of the old
+/// ones is nothing (or something else) in the new.
+fn current_menu(menu: Option<&InGameMenu>, made_in: u32, built: u32) -> Option<&InGameMenu> {
+    menu.filter(|_| made_in == built)
 }
 
 /// Black over the whole screen.
@@ -919,5 +940,20 @@ impl LoadingModel {
                 },
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The intro movie skipped after the window changed size: the loading
+    /// menu made before is not drawn from the new menus (it crashed the game).
+    #[test]
+    fn a_loading_menu_from_an_earlier_build_of_the_menus_is_not_used() {
+        let menu = InGameMenu::new(roller());
+        assert!(current_menu(Some(&menu), 3, 3).is_some());
+        assert!(current_menu(Some(&menu), 3, 4).is_none());
+        assert!(current_menu(None, 3, 3).is_none());
     }
 }

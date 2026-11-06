@@ -94,6 +94,60 @@ pub struct CellScripts {
     /// The attached cells whose people's doors are settled
     /// (`world::locks::settle_package_doors`).
     settled: std::collections::HashSet<FormId>,
+    /// Bases whose model has been asked for a trigger volume.
+    model_triggers: ModelTriggers,
+}
+
+/// The trigger volumes references have from their base's model
+/// ([`world::scripting::TriggerBox::from_model`]): a base's model is read
+/// once, the first time one of its references is attached.
+#[derive(Default)]
+struct ModelTriggers(std::collections::HashMap<FormId, Option<world::scripting::TriggerBox>>);
+
+impl ModelTriggers {
+    /// Gives a reference without `XPRM` the volume of its model's phantom,
+    /// when its script listens to one (a phantom without a trigger block
+    /// makes no difference to anything).
+    fn fill(
+        &mut self,
+        assets: &assets::Assets,
+        order: &esm::LoadOrder,
+        cache: &ScriptCache,
+        r: &mut Interactive,
+    ) {
+        if r.trigger.is_some() || !has_trigger_block(order, cache, r) {
+            return;
+        }
+        let volume = *self.0.entry(r.base).or_insert_with(|| {
+            let model = order
+                .get(r.base)?
+                .record()
+                .ok()?
+                .get(esm::FourCC::new(b"MODL"))?
+                .zstring();
+            let bytes = assets.read(&assets::mesh_path(&model)).ok()??;
+            let nif = nif::Nif::parse(bytes).ok()?;
+            world::scripting::TriggerBox::from_model(&nif.placed_collision().ok()?)
+        });
+        r.trigger = volume.map(|t| t.scaled(if r.scale > 0.0 { r.scale } else { 1.0 }));
+    }
+}
+
+/// Whether its script has an `OnTrigger`, `OnTriggerEnter` or
+/// `OnTriggerLeave` block.
+fn has_trigger_block(order: &esm::LoadOrder, cache: &ScriptCache, r: &Interactive) -> bool {
+    r.script
+        .and_then(|s| cache.script(order, s))
+        .is_some_and(|s| {
+            s.blocks.iter().any(|b| {
+                [
+                    world::ref_scripts::ON_TRIGGER,
+                    world::ref_scripts::ON_TRIGGER_ENTER,
+                    world::ref_scripts::ON_TRIGGER_LEAVE,
+                ]
+                .contains(&b.kind.as_str())
+            })
+        })
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -221,6 +275,15 @@ pub fn door_opens(
     pick: &mut Option<FormId>,
     run_script: bool,
 ) -> bool {
+    if run_script && world::activation::parent_only(order, door) {
+        state.events.push(Event::Message {
+            title: None,
+            text: world::activation::ACTIVATED_ELSEWHERE.to_string(),
+            buttons: Vec::new(),
+            icon: None,
+        });
+        return false;
+    }
     if state.destroyed.contains(&door) {
         println!("The door won't open.");
         return false;
@@ -388,6 +451,12 @@ fn use_object(
     state: &mut GameState,
     r: &Interactive,
 ) -> Option<Used> {
+    if world::activation::parent_only(order, r.reference) {
+        return Some(Used::Notice(
+            world::activation::ACTIVATED_ELSEWHERE.to_string(),
+            None,
+        ));
+    }
     if has_on_activate(order, cache, r) {
         let before = state.events.len();
         Runner::new(order, cache, state).run_event(r.reference, "onactivate", PLAYER_REF);
@@ -400,6 +469,15 @@ fn use_object(
         if !went_on {
             return None;
         }
+    }
+    // An activator's own activation (`004b3aa0`): its sound, its water, its
+    // opening and closing.
+    if r.kind == esm::FourCC::new(b"ACTI") {
+        state.events.push(Event::Activate {
+            what: r.reference,
+            by: Some(PLAYER_REF),
+        });
+        return None;
     }
     let name = |id: FormId| {
         order
@@ -538,18 +616,21 @@ fn object_in_view(
     let target = target?;
     let r = refs.iter().find(|r| {
         r.reference == target
-            && r.trigger.is_none()
+            && !r.is_only_trigger()
             && ![*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes())
     })?;
     // An ash or goo pile standing for a corpse is used to search it; a
     // placed mine to disarm or take it.
     let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
     let mine = r.kind == esm::FourCC::new(b"PROJ");
+    let activator = r.kind == esm::FourCC::new(b"ACTI")
+        && r.name.as_deref().is_some_and(|n| !n.is_empty());
     let usable = r.is_item()
         || r.is_container()
         || r.is_furniture()
         || pile
         || mine
+        || activator
         || has_on_activate(order, cache, r);
     if !usable || !world::enabled_now(order, r.reference, &state.disabled) {
         return None;
@@ -599,6 +680,13 @@ fn object_in_view(
         format!("Sit ({name})")
     } else if r.is_terminal() {
         format!("Access {name}")
+    } else if activator {
+        // "Activate Sink" (`0064a130`; the HUD shows it from the same info,
+        // with a drink's numbers).
+        match world::activation::info(order, state, r.reference).and_then(|i| i.action) {
+            Some(action) => format!("{action} {name}"),
+            None => name,
+        }
     } else {
         name
     };
@@ -1101,6 +1189,21 @@ fn begin_new_game(
     Ok(quest)
 }
 
+/// A script's move of the player waits in the events (its destination is
+/// already the state's `player_position`).
+fn player_move_pending(events: &[Event]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e, Event::MoveTo { what, .. } if *what == PLAYER_REF))
+}
+
+/// Whether the first stage of a new game (or `--stage`) may run now: the
+/// player is placed and no place is waiting to be put on screen (whose
+/// spawn would move the player to its arrival point afterwards).
+fn stage_may_start(player_ready: bool, place_pending: bool, outdoors_pending: bool) -> bool {
+    player_ready && !place_pending && !outdoors_pending
+}
+
 /// Queue transient dialogue cleanup only after the saved world has passed
 /// every preflight step and its state has been committed.
 fn queue_reload_cleanup(commands: &mut Commands, result: &Result<bool, String>) {
@@ -1290,7 +1393,7 @@ pub fn run_scripts(
     (
         mut start_stage,
         player,
-        _pending,
+        pending,
         mut pending_exterior,
         (mut object_shots, mut texture_swaps, mut game_code),
     ): Starting,
@@ -1388,8 +1491,12 @@ pub fn run_scripts(
             Err(why) => announce(crate::hud::HudMessage::with_icon(why, None), &mut notices),
         }
     }
-    // `--stage`, once the place is up.
-    if player.ready {
+    // `--stage`, once the place is up: the player ready and no place still
+    // waiting to be put on screen. The main menu's New makes the player
+    // ready as the menu closes, before the new game's place is spawned; a
+    // stage run then (the birth's `MoveTo`) was undone by the spawn, which
+    // puts the player at the place's arrival point.
+    if stage_may_start(player.ready, pending.0.is_some(), pending_exterior.0.is_some()) {
         if let Some((quest, n)) = start_stage.0.take() {
             match order.form_by_editor_id(&quest) {
                 Some(q) => {
@@ -1456,7 +1563,13 @@ pub fn run_scripts(
     // Animation and V.A.T.S. can move the view independently of the body.
     // Quest positions, triggers and saves must follow the collision capsule.
     let feet = player.position_for_view(eye);
-    state.player_position = Some(feet);
+    // A script that moved the player this frame (the new game's first stage,
+    // run above: the birth's `MoveTo CG00PlayerStartMarker`) has already put
+    // the destination there; the move reads it (`move_player`). Writing the
+    // view's place over it sent the player back where they stood.
+    if !player_move_pending(&state.events) {
+        state.player_position = Some(feet);
+    }
     // What has 3D now (`PlayMagicShaderVisuals` needs it): the rendered
     // placed objects, the people about and the player.
     let mut loaded: std::collections::HashSet<FormId> = object_bounds
@@ -1527,23 +1640,30 @@ pub fn run_scripts(
         feet,
     );
     let cells: Vec<FormId> = attached.iter().map(|(c, _)| *c).collect();
+    let mut model_triggers = std::mem::take(&mut cell_scripts.model_triggers);
     refresh_cell_scripts(
         order,
         &scripts.0,
         state,
         &mut cell_scripts,
         &cells,
-        |cell| match (
-            &exterior,
-            attached
-                .iter()
-                .find(|(c, _)| *c == cell)
-                .and_then(|(_, s)| *s),
-        ) {
-            (Some(e), Some(square)) => {
-                world::scripting::interactive_in_square(order, &e.grid, square)
+        |cell| {
+            let mut refs = match (
+                &exterior,
+                attached
+                    .iter()
+                    .find(|(c, _)| *c == cell)
+                    .and_then(|(_, s)| *s),
+            ) {
+                (Some(e), Some(square)) => {
+                    world::scripting::interactive_in_square(order, &e.grid, square)
+                }
+                _ => world::scripting::interactive_references(order, cell),
+            };
+            for r in &mut refs {
+                model_triggers.fill(&game.0.assets, order, &scripts.0, r);
             }
-            _ => world::scripting::interactive_references(order, cell),
+            refs
         },
     );
     // References scripts moved run in the cell they stand in now
@@ -1564,12 +1684,14 @@ pub fn run_scripts(
                 (r, cell)
             })
             .collect();
-    if cell_scripts
-        .scheduler
-        .place_moved(&mut Runner::new(order, &scripts.0, state), &moved_now)
-    {
+    if cell_scripts.scheduler.place_moved(
+        &mut Runner::new(order, &scripts.0, state),
+        &moved_now,
+        |r| model_triggers.fill(&game.0.assets, order, &scripts.0, r),
+    ) {
         cell_scripts.refs = cell_scripts.scheduler.refs().to_vec();
     }
+    cell_scripts.model_triggers = model_triggers;
     // Time stands still in the dialogue menu (not while a line is said)
     // and in the other menus.
     let dt = time.delta_secs();
@@ -1739,7 +1861,12 @@ pub fn run_scripts(
     // closed at once, with nothing changed, so its MenuMode blocks run once.
     let mut menus = Vec::new();
     let mut save_requests = Vec::new();
+    world::activation::run_delayed_activations(order, &scripts.0, state);
     for event in std::mem::take(&mut state.events) {
+        // Its children are activated first (`004ed0d0`).
+        if let Event::Activate { what, .. } = &event {
+            world::activation::activate_children(order, &scripts.0, state, *what);
+        }
         let name = |id: FormId| {
             order
                 .get(id)
@@ -2242,6 +2369,9 @@ pub fn run_scripts(
                 if let Some(moved) = used.moved {
                     println!("{what} (an activator) is activated: {moved:?}.");
                 }
+                if let Some(spell) = used.drank {
+                    println!("{what}: a drink ({spell}).");
+                }
                 None
             }
             // A script having the player use a person (`Activate player`
@@ -2438,6 +2568,28 @@ pub fn run_scripts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The birth stage's `MoveTo` runs before the frame notes where the
+    /// player stands: a pending move of the player keeps its destination.
+    #[test]
+    fn a_pending_move_of_the_player_keeps_its_destination() {
+        let other = FormId(0x1234);
+        let to = FormId(0x39562);
+        assert!(!player_move_pending(&[]));
+        assert!(!player_move_pending(&[Event::MoveTo { what: other, to }]));
+        assert!(player_move_pending(&[Event::MoveTo { what: PLAYER_REF, to }]));
+    }
+
+    /// New from the main menu: the menu closing makes the player ready while
+    /// the new game's place still waits to be spawned. The birth stage waits
+    /// for it, or the spawn put the player back at the arrival point.
+    #[test]
+    fn a_new_games_first_stage_waits_for_its_place() {
+        assert!(!stage_may_start(true, true, false));
+        assert!(!stage_may_start(true, false, true));
+        assert!(!stage_may_start(false, false, false));
+        assert!(stage_may_start(true, false, false));
+    }
 
     #[derive(Resource)]
     struct TestLoadResult(Result<bool, String>);

@@ -6,9 +6,9 @@
 //! the line's result scripts. DATA › Radio's rows click through
 //! `pipboy` into [`click`]. The Pip-Boy being put away doesn't touch it.
 //! Script functions (`PipboyRadio`, `StartRadioConversation`,
-//! `SetNPCRadio` …) act on the same radio; a person playing a station
-//! (a receiver) plays its lines here too, not placed in the world (as the
-//! viewer's other voices: no distance falloff or direction).
+//! `SetNPCRadio` …) act on the same radio; a person or an activator playing
+//! a station (a receiver) plays its lines here too, as quiet as its distance
+//! says (as the viewer's other voices: no direction).
 
 use std::collections::HashMap;
 
@@ -45,8 +45,9 @@ pub struct RadioOut {
     static_loop: Option<(Entity, f32)>,
     /// Events from a click, done next frame.
     pending: Vec<RadioEvent>,
-    /// What each receiver plays now, and its static loop.
-    receivers: HashMap<FormId, Entity>,
+    /// What each receiver plays now (and how loud at no distance), and its
+    /// static loop.
+    receivers: HashMap<FormId, (Entity, f32)>,
     receiver_static: HashMap<FormId, (Entity, f32)>,
 }
 
@@ -236,7 +237,10 @@ pub fn run_radio(
                 volume,
                 offset,
             } => {
-                despawn(&mut commands, out.receivers.remove(&reference));
+                despawn(
+                    &mut commands,
+                    out.receivers.remove(&reference).map(|(e, _)| e),
+                );
                 // The file (a song's mono OGG or a voice file) decoded and
                 // started `offset` ms in, in step with the station.
                 let playing = game
@@ -259,13 +263,16 @@ pub fn run_radio(
                 match playing {
                     Some(e) => {
                         println!("Radio: {reference} plays {path}.");
-                        out.receivers.insert(reference, e);
+                        out.receivers.insert(reference, (e, volume * master));
                     }
                     None => println!("Radio: {reference} can't play {path} (not found)."),
                 }
             }
             RadioEvent::ReceiverStop(reference) => {
-                despawn(&mut commands, out.receivers.remove(&reference));
+                despawn(
+                    &mut commands,
+                    out.receivers.remove(&reference).map(|(e, _)| e),
+                );
             }
             RadioEvent::ReceiverStatic {
                 reference,
@@ -297,11 +304,37 @@ pub fn run_radio(
             }
         }
     }
-    // The static loops' volumes follow the strength.
-    let loops = out.static_loop.iter().chain(out.receiver_static.values());
-    for &(e, v) in loops {
+    // The static loops' volumes follow the strength; a receiver's are as far
+    // off as it is.
+    let far_off = |reference: FormId| {
+        let distance = |key: &str, default: f32| game.settings.float("Audio", key).unwrap_or(default);
+        let min = distance("fDialogMinDistance", world::sound::VOICE_MIN_DISTANCE);
+        let max = distance("fDialogMaxDistance", world::sound::VOICE_MAX_DISTANCE);
+        let listener = state.0.player_position;
+        match (state.0.place(order, reference), listener) {
+            (Some(place), Some(ear)) => {
+                let d = (0..3)
+                    .map(|k| (place.2[k] - ear[k]).powi(2))
+                    .sum::<f32>()
+                    .sqrt();
+                world::sound::voice_amplitude(d, min, max)
+            }
+            _ => 1.0,
+        }
+    };
+    for (&reference, &(e, v)) in &out.receivers {
+        if let Ok(mut sink) = sinks.get_mut(e) {
+            sink.set_volume(Volume::Linear(v * far_off(reference)));
+        }
+    }
+    if let Some(&(e, v)) = out.static_loop.as_ref() {
         if let Ok(mut sink) = sinks.get_mut(e) {
             sink.set_volume(Volume::Linear(v * master));
+        }
+    }
+    for (&reference, &(e, v)) in &out.receiver_static {
+        if let Ok(mut sink) = sinks.get_mut(e) {
+            sink.set_volume(Volume::Linear(v * master * far_off(reference)));
         }
     }
 }

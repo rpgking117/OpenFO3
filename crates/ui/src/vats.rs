@@ -81,7 +81,7 @@ pub struct VatsTiles {
     pub glow_branch: TileId,
     pub accept: TileId,
     pub ret: TileId,
-    pub special: [TileId; 2],
+    pub special: [Option<TileId>; 2],
     pub queued_actions: TileId,
 }
 
@@ -452,9 +452,11 @@ impl VatsMenu {
             glow_branch: find(ui, "GlowBranch")?,
             accept: find(ui, "accept_button")?,
             ret: find(ui, "return_button")?,
+            // New Vegas's weapons' special attacks; Fallout 3's menu has
+            // no such buttons.
             special: [
-                find(ui, "special_attack_button")?,
-                find(ui, "special_attack_2_button")?,
+                ui.find(menu, "special_attack_button"),
+                ui.find(menu, "special_attack_2_button"),
             ],
             queued_actions: find(ui, "queued_actions")?,
         };
@@ -974,7 +976,12 @@ impl VatsMenu {
             if input.queue.is_empty() { 0.0 } else { 1.0 },
         );
         // Special attacks (`007eb920`).
-        for (tile, name) in tiles.special.iter().zip(&input.specials) {
+        for (tile, name) in tiles
+            .special
+            .iter()
+            .zip(&input.specials)
+            .filter_map(|(t, n)| t.as_ref().map(|t| (t, n)))
+        {
             match name {
                 Some(n) => {
                     ui.set_string(*tile, t::STRING, n);

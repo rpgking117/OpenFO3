@@ -134,6 +134,11 @@ pub struct Seen {
 /// What these functions keep.
 #[derive(Debug, Clone, Default)]
 pub struct State {
+    /// Who activates whom (`crate::activation::activate_children`), read once.
+    pub activate_links: crate::activation::ActivateLinks,
+    /// Children waiting out their delay: when (the state's clock), the child,
+    /// its parent.
+    pub delayed_activations: Vec<(f64, FormId, FormId)>,
     /// People who are ghosts (`SetGhost`: extra data 0x1F and the AI
     /// process's flag 0x10000000).
     pub ghosts: HashSet<FormId>,

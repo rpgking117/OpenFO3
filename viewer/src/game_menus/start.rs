@@ -100,6 +100,19 @@ pub fn mouse_look(settings: &GameSettings, game: &Game) -> (f32, bool) {
     (sensitivity, invert)
 }
 
+/// Fallout 3's HUD and Pip-Boy colours in the settings' order (`00f6b3d8`):
+/// green, blue, amber, white, as `uHUDColor` / `uPipboyColor` hold them.
+pub const COLOURS: [u32; 4] = [0x1aff_80ff, 0x2ecf_ffff, 0xffb6_42ff, 0xc5ff_ffff];
+
+/// A colour setting's place in [`COLOURS`] (`00679a20`, `00679ad0`): the
+/// one the INI's value is, else the first (green).
+pub fn colour_place(ini_value: Option<&str>) -> f32 {
+    ini_value
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .and_then(|c| COLOURS.iter().position(|&x| x == c))
+        .unwrap_or(0) as f32
+}
+
 /// An INI value, else the exe's default.
 fn ini(game: &Game, section: &str, key: &str, default: f32) -> f32 {
     game.settings.float(section, key).unwrap_or(default)
@@ -133,6 +146,11 @@ fn initial_settings(game: &Game) -> HashMap<Setting, f32> {
     m.insert(Brightness, ini(game, "Display", "fGamma", 1.0));
     m.insert(HudOpacity, ini(game, "Interface", "fHudOpacity", 1.0));
     m.insert(TextureSize, ini(game, "Display", "iTexMipMapSkip", 0.0));
+    m.insert(HudColor, colour_place(game.settings.get("Interface", "uHUDColor")));
+    m.insert(
+        PipboyColor,
+        colour_place(game.settings.get("Interface", "uPipboyColor")),
+    );
     m.insert(MasterVolume, v.master);
     m.insert(MusicVolume, v.music);
     m.insert(RadioVolume, v.radio);
@@ -237,8 +255,9 @@ pub fn to_index(settings: &HashMap<Setting, f32>, s: Setting, count: i32) -> (i3
             ((count - 1) as f32 * values::MOUSE_DEFAULT).round() as i32,
         ),
         // `007d1840` / `007d1900`: the colour's place in the table at
-        // `011dac50` (not read here: the default, Amber, index 2).
-        HudColor | PipboyColor => (2, 2),
+        // `00679a20` / `00679ad0`: the colour's place in `00f6b3d8`
+        // ([`colour_place`]), default the first.
+        HudColor | PipboyColor => (v as i32, 0),
         TextureSize => (v as i32, 0),
         Controller | Rumble => (0, 0),
         _ => {
@@ -662,6 +681,13 @@ mod tests {
         m.insert(Setting::MouseSensitivity, 0.002);
         m.insert(Setting::Crosshair, 1.0);
         m.insert(Setting::Difficulty, 2.0);
+        // Fallout 3's green (the user's `uHUDColor=452952319`), and a colour
+        // that isn't in the table: green too.
+        m.insert(Setting::HudColor, colour_place(Some("452952319")));
+        m.insert(Setting::PipboyColor, colour_place(Some("12345")));
+        assert_eq!(to_index(&m, Setting::HudColor, 4), (0, 0));
+        assert_eq!(to_index(&m, Setting::PipboyColor, 4), (0, 0));
+        assert_eq!(colour_place(Some("4290134783")), 2.0);
         assert_eq!(to_index(&m, Setting::MusicVolume, 26), (15, 25));
         assert!((from_index(Setting::MusicVolume, 15, 26) - 0.6).abs() < 1e-6);
         assert_eq!(to_index(&m, Setting::MouseSensitivity, 16), (2, 2));
