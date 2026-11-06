@@ -1,0 +1,76 @@
+[package]
+name = "nv-viewer"
+version = "1.0.0"
+description = "OpenFO3: an open-source engine for Fallout 3 (Bevy)"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Its own workspace, so the rest of the project still builds without
+# downloading Bevy.
+[workspace]
+
+[build-dependencies]
+winresource = "0.1"
+
+[dependencies]
+# Pinned: Bevy's API changes between releases.
+bevy = { version = "0.16", features = ["wayland"] }
+# Bevy's own wgpu (the same version, no features of its own): the window's
+# surface asked which present modes it takes (`present`).
+wgpu = { version = "24", default-features = false }
+cellview = { path = "../crates/cellview" }
+physics = { path = "../crates/physics" }
+world = { path = "../crates/world" }
+script = { path = "../crates/script" }
+esm = { path = "../crates/esm" }
+nif = { path = "../crates/nif" }
+preview = { path = "../crates/preview" }
+assets = { path = "../crates/assets" }
+ui = { path = "../crates/ui" }
+bink = { path = "../crates/bink" }
+speedtree = { path = "../crates/speedtree" }
+# Decodes the game's .ogg sounds (already in the build through Bevy's audio,
+# whose own .ogg playback crashed the viewer in Dead Money's Villa).
+lewton = "0.10"
+
+[features]
+default = []
+
+[dev-dependencies]
+testdata = { path = "../crates/testdata" }
+
+# Bevy is slow unoptimized; optimize dependencies even in debug builds.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# The play-build loop's viewers (`cargo build --profile play`, exe in target/play/): the engine
+# crates and host at opt-level 1 (their time is almost all code generation: engine-fallout 370
+# of 448 s, engine-havok 290 of 321 s at opt-level 3, 2026-10-23), dependencies as in release.
+# Packaging the play copy stays on `--release`.
+[profile.play]
+inherits = "release"
+incremental = true
+debug = 0
+
+# Long play-build runs (a full data load): `--profile play-fast`, exe in target/play-fast/; the
+# engine crates and host at opt-level 3. Quick stop-fix loops stay on `--profile play`.
+[profile.play-fast]
+inherits = "play"
+
+# A fully optimised play build (`--profile play-opt`, exe in target/play-opt/; 2026-10-28): every
+# crate at opt-level 3 as in release, without the play profiles' incremental builds (their 256
+# code-generation units a crate cost run time), and engine-core, where every call and memory
+# access goes through, as one code-generation unit (a small crate: a minute to build).
+[profile.play-opt]
+inherits = "release"
+debug = 0
+incremental = false
+
+# winit 0.30.13 took absolute mouse positions as movement (see the patch in
+# third_party/winit-0.30.13/src/platform_impl/windows/event_loop.rs).
+[patch.crates-io]
+winit = { path = "../third_party/winit-0.30.13" }

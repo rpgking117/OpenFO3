@@ -1,0 +1,1 @@
+no licence file in the package archive; fetched from https://github.com/emilk/egui at commit 1669e52a7ccfc3489c1b0999b9ed48894a0b3887 (the repository root)

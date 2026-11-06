@@ -1,0 +1,22 @@
+# OpenFO3's checks: the engine crates' tests (the repository hygiene test
+# among them), the launcher's tests and a build of the game.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Engine crates
+        run: cargo test --release --workspace
+      - name: Launcher
+        working-directory: launcher
+        run: cargo test --release
+      - name: Game
+        working-directory: viewer
+        run: cargo build --release

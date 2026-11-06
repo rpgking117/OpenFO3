@@ -1,0 +1,17 @@
+OpenFO3 1.0 - open-source Fallout 3 engine
+by RPGKING The Mad Modder
+
+You need your own copy of Fallout 3 (Steam, GOG or disc). No game files
+are included. OpenFO3 doesn't change your Fallout 3 install, settings or
+saves.
+
+This is version 1.0 and it isn't finished. Bugs will be common, including
+crashes and stuck quests.
+
+The programs aren't code-signed, so Windows or your antivirus may warn you.
+If you see "Windows protected your PC", click "More info", then "Run anyway".
+
+After installing, run OpenFO3 from the Start menu. Saves go to
+Documents\My Games\OpenFO3 and are kept if you uninstall.
+
+Not affiliated with Bethesda Softworks, ZeniMax Media or Microsoft.
