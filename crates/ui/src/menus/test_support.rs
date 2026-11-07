@@ -153,10 +153,10 @@ pub fn quantity_menu() -> String {
         .to_string()
 }
 
-/// A container menu laid out like `container_menu.xml`: every tile its
-/// code needs (ids 0 to 18), two lists, the item template.
+/// A container menu laid out like Fallout 3's `container_menu.xml`: ids 0
+/// to 13 (13 the item card, `CM_ItemData`), two lists, the item template.
 pub fn container_menu() -> String {
-    let card: String = (13..=18)
+    let card: String = (13..=13)
         .map(|id| format!("<rect name=\"Card{id}\"><id>{id}</id><visible>&false;</visible></rect>"))
         .collect();
     format!(

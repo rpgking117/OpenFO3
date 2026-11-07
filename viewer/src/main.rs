@@ -19,6 +19,7 @@ mod casino_scene;
 mod chatter;
 mod clutter;
 mod combat;
+mod console;
 mod companions;
 mod controls;
 mod crosshair;
@@ -491,6 +492,7 @@ fn main() {
         .init_resource::<menu_background::MenuBackground>()
         .init_resource::<PlayingGroups>()
         .init_resource::<doors::SwingDoors>()
+        .init_resource::<doors::AnimatedCollision>()
         .init_resource::<doors::DoorPoses>()
         .init_resource::<combat::PlayerAttack>()
         .init_resource::<scripts::LoadRequest>()
@@ -588,7 +590,7 @@ fn main() {
             wait_for_display: args.vsync == Some(true),
         })
         // After the default plugins: they load shaders.
-        .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
+        .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin, console::ConsolePlugin))
         .add_plugins(game_menus::GameMenusPlugin)
         .insert_resource(pipboy::StartPipboy(args.pipboy.clone()))
         .insert_resource(pipboy::StartPipboyKeys(args.pipboy_keys.clone()))
@@ -849,7 +851,7 @@ fn main() {
         .add_systems(
             Update,
             (
-                (walk::doors, doors::update_doors).chain(),
+                (walk::doors, doors::update_doors, doors::follow_animated_collision).chain(),
                 (movie::start_movies, movie::play_movies).chain(),
             )
                 // Kept: the viewer's order among them.
@@ -3552,10 +3554,11 @@ fn spawn_scene(
     old: Query<Entity, With<SceneEntity>>,
     mut cameras: Query<(&mut Transform, &mut FlyCamera, &mut ImageSpaceGrade)>,
     mut windows: Query<&mut Window>,
-    (mut swing_doors, mut state, game): (
+    (mut swing_doors, mut state, game, mut animated): (
         ResMut<doors::SwingDoors>,
         ResMut<dialogue::DialogueState>,
         Res<GameFiles>,
+        ResMut<doors::AnimatedCollision>,
     ),
 ) {
     let Some(scene) = pending.0.take() else {
@@ -3565,6 +3568,7 @@ fn spawn_scene(
     // play (the state's `GetOpenState` needs it).
     swing_doors.read_settings(&game.0.settings);
     swing_doors.replace(scene.swing_doors.iter(), &mut state.0);
+    animated.replace(scene.animated.iter());
     for entity in &old {
         spawner.commands.entity(entity).despawn();
     }

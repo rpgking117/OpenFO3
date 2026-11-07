@@ -120,6 +120,8 @@ pub mod ids {
     /// A persistent `TestAdult` (record flag 0x400) at 0,-500,0, as the
     /// game's quest people (`MQ01SarahREF`).
     pub const PERSISTENT_REF: u32 = 0xF43;
+    /// A note (`NOTE`), as the Overseer's terminal password.
+    pub const PASSWORD_NOTE: u32 = 0xF4D;
     /// A switch (a named activator without a script).
     pub const SWITCH: u32 = 0xF4A;
     /// `TestSwitch` at 500,300,0.
@@ -362,6 +364,13 @@ pub fn functions(tag: &str) -> TempData {
         *b"ACTI",
         0,
         &named(b"ACTI", SWITCH, "TestSwitch", &sub(b"FULL", &zstr("Switch"))),
+    ));
+    let mut note = sub(b"FULL", &zstr("Terminal Password"));
+    note.extend(sub(b"DATA", &[1]));
+    plugin.extend(group(
+        *b"NOTE",
+        0,
+        &named(b"NOTE", PASSWORD_NOTE, "TestPasswordNote", &note),
     ));
     plugin.extend(group(
         *b"WATR",

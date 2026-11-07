@@ -1148,3 +1148,33 @@ fn a_parent_activates_its_children() {
         state.events
     );
 }
+
+/// A note the player gets goes to their notes, not their inventory, however
+/// it comes (`Actor::vf64`, `00719e10`): given by a script, taken from a
+/// container; and a save that still carries one has it moved over.
+#[test]
+fn notes_go_to_the_notes_not_the_inventory() {
+    use world::dialogue::PLAYER_REF;
+    let (_data, order) = order("fn-notes");
+    let scripts = ScriptCache::default();
+    let note = FormId(PASSWORD_NOTE);
+    // A script's AddItem.
+    let mut state = new_game(&order);
+    run(&order, &scripts, &mut state, "player.AddItem TestPasswordNote 1");
+    assert!(state.notes.contains(&note));
+    assert_eq!(state.items.get(&(PLAYER_REF, note)), None);
+    // Taken from a container.
+    let mut state = new_game(&order);
+    let chest = FormId(CHEST_REF);
+    state.items.insert((chest, note), 1);
+    assert_eq!(state.move_item(&order, chest, PLAYER_REF, note, 1), 1);
+    assert!(state.notes.contains(&note));
+    assert_eq!(state.items.get(&(PLAYER_REF, note)), None);
+    assert_eq!(state.items.get(&(chest, note)), None);
+    // Carried in an older save.
+    let mut state = new_game(&order);
+    state.items.insert((PLAYER_REF, note), 1);
+    state.carried_notes_to_notes(&order);
+    assert!(state.notes.contains(&note));
+    assert_eq!(state.items.get(&(PLAYER_REF, note)), None);
+}

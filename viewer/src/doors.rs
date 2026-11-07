@@ -175,6 +175,69 @@ pub fn update_doors(
     poses.0 = new_poses;
 }
 
+/// Activators whose animation moves their collision (`cellview`'s
+/// `animated`: Megaton's gate), and the moment of the sequence each one's
+/// collision was last put at.
+#[derive(Resource, Default)]
+pub struct AnimatedCollision {
+    objects: HashMap<u32, SwingDoor>,
+    applied: HashMap<u32, Option<(String, i32)>>,
+    /// The collider was rebuilt: every one is put back where its sequence
+    /// has it.
+    dirty: bool,
+}
+
+impl AnimatedCollision {
+    pub fn replace<'a>(&mut self, objects: impl Iterator<Item = &'a SwingDoor>) {
+        self.objects = objects.map(|o| (o.reference.0, o.clone())).collect();
+        self.applied.clear();
+        self.dirty = true;
+    }
+}
+
+/// The moment of `sequence` a group started `since` seconds ago is at, held at
+/// its end once it's played through.
+pub fn moment(sequence: &nif::Sequence, since: f32) -> f32 {
+    sequence.start + since.clamp(0.0, (sequence.stop - sequence.start).max(0.0))
+}
+
+/// Their collision follows the sequence their script plays (`PlayGroup`),
+/// as their pieces do (`move_pieces`): a keyframed body stays on its node.
+/// Without one, at rest (as placed).
+pub fn follow_animated_collision(
+    time: Res<Time>,
+    groups: Res<crate::PlayingGroups>,
+    mut animated: ResMut<AnimatedCollision>,
+    mut collision: ResMut<CellCollision>,
+) {
+    let now = time.elapsed_secs();
+    let AnimatedCollision {
+        objects,
+        applied,
+        dirty,
+    } = &mut *animated;
+    let rebuilt = std::mem::take(dirty);
+    for (&reference, object) in objects.iter() {
+        let layer = groups.0.get(&reference).and_then(|(name, at)| {
+            object
+                .sequences
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case(name))
+                .map(|s| (s, moment(s, now - at)))
+        });
+        // To a thirtieth of a second: the collider isn't moved again for
+        // less.
+        let key = layer.map(|(s, t)| (s.name.clone(), (t * 30.0).round() as i32));
+        if !rebuilt && applied.get(&reference) == Some(&key) {
+            continue;
+        }
+        for (owner, rotation, translation) in object.leaf_moves(layer) {
+            collision.0.move_owner(owner, &rotation, translation);
+        }
+        applied.insert(reference, key);
+    }
+}
+
 /// The sound a `sound:` text key names (`004eef00`: the word after
 /// `Sound: `, looked up by editor ID), if it's one.
 pub(crate) fn text_key_sound(order: &esm::LoadOrder, text: &str) -> Option<FormId> {
@@ -242,6 +305,26 @@ const PORTAL_REACH: f32 = 128.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Megaton's gate: its collision is posed at the moment of the sequence
+    /// its script plays, held at the end once it has played through (the
+    /// gate stays open), never before its start.
+    #[test]
+    fn a_scripted_sequence_poses_its_collision_and_holds_the_end() {
+        let forward = nif::Sequence {
+            name: "Forward".into(),
+            start: 0.0,
+            stop: 15.0,
+            looping: false,
+            tracks: Vec::new(),
+            accum_root: None,
+            materials: Vec::new(),
+            text_keys: Vec::new(),
+        };
+        assert_eq!(moment(&forward, 4.0), 4.0);
+        assert_eq!(moment(&forward, 40.0), 15.0);
+        assert_eq!(moment(&forward, -1.0), 0.0);
+    }
 
     #[test]
     fn text_keys_name_sounds_after_sound_colon() {

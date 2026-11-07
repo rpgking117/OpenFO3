@@ -2,7 +2,7 @@
 ; by RPGKING The Mad Modder
 ;
 ; tools/release/release.py builds it with the release's version and folders:
-;   ISCC /DAppVersion=1.0.1 /DSourceDir=<the OpenFO3 game folder> /DOutputDir=<dist> OpenFO3.iss
+;   ISCC /DAppVersion=1.0.2 /DSourceDir=<the OpenFO3 game folder> /DOutputDir=<dist> OpenFO3.iss
 ;
 ; It installs the game folder (OpenFO3.exe, the launcher, the readme, licences
 ; and notices) and Start menu / desktop shortcuts to the launcher. Uninstalling
@@ -10,7 +10,7 @@
 ; (%APPDATA%\OpenFO3) stay, and Fallout 3 itself is never touched.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.0.2"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\OpenFO3"

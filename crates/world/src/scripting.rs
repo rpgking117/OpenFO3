@@ -796,6 +796,9 @@ impl GameState {
     /// a holder's own contents): each one with a script gets a script of
     /// its own (`004821a0`) and its `OnAdd` for the holder (`00574fa0`).
     pub fn added(&mut self, order: &LoadOrder, holder: FormId, item: FormId, count: i32) {
+        if self.note_to_notes(order, holder, item) {
+            return;
+        }
         if count > 0 && item_script(order, item).is_some() {
             for _ in 0..count {
                 self.item_scripts.push(ItemScript {
@@ -935,8 +938,41 @@ impl GameState {
             self.items.insert((from, item), have - n);
         }
         *self.items.entry((to, item)).or_insert(0) += n;
+        if self.note_to_notes(order, to, item) {
+            return n;
+        }
         self.moved(order, from, to, item, n);
         n
+    }
+
+    /// A note the player gets goes to their notes and isn't carried
+    /// (Fallout3.exe `Actor::vf64`, `00719e10`: form type 0x31 to the player
+    /// is `00780f40`'s, the Pip-Boy's notes, and nothing more): taken from a
+    /// container, picked up or given by a script. True when `item` was one.
+    pub fn note_to_notes(&mut self, order: &LoadOrder, holder: FormId, item: FormId) -> bool {
+        let is_note = order
+            .get(item)
+            .is_some_and(|r| r.entry.header.kind == FourCC::new(b"NOTE"));
+        if holder != PLAYER_REF || !is_note {
+            return false;
+        }
+        self.items.remove(&(PLAYER_REF, item));
+        self.notes.insert(item);
+        true
+    }
+
+    /// Notes a save from before [`Self::note_to_notes`] left in the player's
+    /// inventory, moved to their notes.
+    pub fn carried_notes_to_notes(&mut self, order: &LoadOrder) {
+        let carried: Vec<FormId> = self
+            .items
+            .keys()
+            .filter(|(holder, _)| *holder == PLAYER_REF)
+            .map(|(_, item)| *item)
+            .collect();
+        for item in carried {
+            self.note_to_notes(order, PLAYER_REF, item);
+        }
     }
 
     /// What a holder's items weigh together (`InventoryWeight`; the

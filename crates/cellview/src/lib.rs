@@ -609,6 +609,9 @@ pub struct ViewerScene {
     /// Doors that open where they stand (`world::doors`): their models'
     /// sequences and the collision their leaves swing with.
     pub swing_doors: Vec<SwingDoor>,
+    /// Activators whose animation moves their collision (Megaton's gate):
+    /// as [`Self::swing_doors`], moved by the sequence a script plays.
+    pub animated: Vec<SwingDoor>,
     /// An exterior cell's terrain, a mesh per quarter.
     pub terrain: Vec<TerrainData>,
     /// Outdoors: the sky's colours by day as stored (0..1): upper sky,
@@ -935,6 +938,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     let collision = scene.collider(convention);
     let doors = cell_doors(scene, convention);
     let swing_doors = scene.swing_doors(convention);
+    let animated = scene.animated_collision(convention);
     let bodies = scene.dynamic_bodies(convention);
 
     let cell = &scene.cell;
@@ -1095,6 +1099,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
         collision,
         doors,
         swing_doors,
+        animated,
         bodies,
         terrain: Vec::new(),
         actors,

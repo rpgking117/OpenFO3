@@ -642,6 +642,8 @@ struct MenuPictures {
     images: HashMap<(String, bool, bool), Option<Handle<Image>>>,
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
     last: Vec<DrawItem>,
+    /// The picture's size they were last put on.
+    last_size: UVec2,
     drawn: Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>,
 }
 
@@ -679,11 +681,18 @@ impl MenuPictures {
             };
             ui::draw_list(ui, menu, &mut files, &|_| None)
         };
-        if items == self.last {
+        // Again when the picture's size changes too (the window settling
+        // after the menu opened).
+        if items == self.last && size == self.last_size {
             return;
         }
+        self.last_size = size;
         self.clear(commands, assets);
-        let k = 1.0 / ui.screen_size.resolution_converter();
+        // Pixels a menu unit on the picture it's drawn into (`size`): the
+        // menu keeps the layout it was made with, which can be for another
+        // size (made while the window was still settling: 1920 × 1080 at 150 %
+        // came out as 2880 × 1620 and pushed the info panel off the screen).
+        let k = size.y.max(1) as f32 / ui.screen_size.height();
         for (i, item) in items.iter().enumerate() {
             let tint = Vec4::from_array(item.color);
             let mut pieces: Vec<(Handle<Image>, Vec<Quad>)> = Vec::new();
@@ -1146,12 +1155,19 @@ fn show_lockpicking(
 
     // The menu's pictures.
     let menu = open.menu.menu;
+    // The picture it's drawn into, as it is now (the HUD's layer follows the
+    // window).
+    let drawn_size = hud_layer
+        .as_deref()
+        .and_then(|h| assets.images.get(&h.0))
+        .map(|i| UVec2::new(i.width(), i.height()))
+        .unwrap_or(open.size);
     s.pictures.paint(
         &mut commands,
         &game.0,
         &mut open.ui,
         menu,
-        open.size,
+        drawn_size,
         &s.white,
         &mut assets,
         compressed,

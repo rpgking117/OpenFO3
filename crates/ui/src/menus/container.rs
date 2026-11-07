@@ -77,8 +77,11 @@ pub const ASK_QUANTITY_AT: i32 = 5;
 pub const TAKE_ALL_SOUND: &str = "UIItemTakeAll";
 /// The id an item of either list has (`CM_list_template_container`).
 pub const ITEM_ID: i32 = 20;
-/// How many tile ids the menu needs (`0075b710`: 0 to 18, or it fails).
-pub const TILE_COUNT: usize = 19;
+/// The menu's tile ids: 0 to 13 (Fallout3.exe `ContainerMenu::vf04`,
+/// `0063ab60`: ids below 0xe; `container_menu.xml` has 0 to 13 and the item
+/// template's 15). New Vegas's 14 to 18 (the item card's DPS, DT and the
+/// rest) aren't in Fallout 3's file.
+pub const TILE_COUNT: usize = 14;
 
 /// The game's form type numbers the filters test.
 pub mod form_type {
@@ -297,10 +300,14 @@ impl ContainerMenu {
         }
     }
 
-    /// Opens it (`0075b310`, mode 1): false when the file lacks one of the
-    /// menu's tiles ("Container Menu Creation Failed").
+    /// Opens it (`0075b310`, mode 1). Fallout 3 has no check that the file
+    /// has every tile (New Vegas's "Container Menu Creation Failed" isn't in
+    /// Fallout3.exe); false only without the two item lists, with nothing to
+    /// show.
     pub fn open(&mut self, ui: &mut Ui, player: Vec<Item>, container: Vec<Item>) -> bool {
-        if self.tiles.iter().any(Option::is_none) {
+        if self.tile(Self::list_tile(Side::Player)).is_none()
+            || self.tile(Self::list_tile(Side::Container)).is_none()
+        {
             return false;
         }
         for side in [Side::Player, Side::Container] {
@@ -888,6 +895,15 @@ mod tests {
         m.weights = (12.5, 199.4);
         assert!(m.open(&mut ui, player, container));
         (ui, m)
+    }
+
+    /// Fallout 3's file has tiles 0 to 13 only, and the menu opens with them
+    /// (it refused every container, wanting New Vegas's 14 to 18).
+    #[test]
+    fn fallout_3s_layout_opens() {
+        let (_ui, m) = opened(vec![item(1, "Gun", 1, form_type::WEAP)], vec![], "Footlocker");
+        assert_eq!(m.tiles.len(), 14);
+        assert!(m.tiles.iter().all(Option::is_some));
     }
 
     /// The text of a side's lines, in order, shown ones only.

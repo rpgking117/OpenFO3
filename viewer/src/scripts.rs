@@ -631,6 +631,9 @@ fn object_in_view(
         || pile
         || mine
         || activator
+        // A computer: used to read or hack it (`world::terminal`); none has an
+        // `OnActivate` of its own to make it usable otherwise.
+        || r.is_terminal()
         || has_on_activate(order, cache, r);
     if !usable || !world::enabled_now(order, r.reference, &state.disabled) {
         return None;
@@ -844,6 +847,12 @@ fn restore_script_state(state: &mut GameState, cells: &mut CellScripts, loaded: 
     *cells = CellScripts::default();
 }
 
+/// A loaded save's notes still carried as items (saves from before notes
+/// went to the Pip-Boy's notes) moved there.
+fn notes_out_of_inventory(order: &esm::LoadOrder, state: &mut GameState) {
+    state.carried_notes_to_notes(order);
+}
+
 /// Prepare the destination before changing the running world. A missing cell
 /// or worldspace must not leave old geometry with a different quest state.
 #[cfg(test)]
@@ -949,6 +958,7 @@ fn load_saved_world_into(
         }
     }
     restore_script_state(state, cells, loaded);
+    notes_out_of_inventory(&game.order, state);
     *idle = restored_idle;
     if place.is_some() {
         start_pitch.0 = pitch;
@@ -3163,6 +3173,29 @@ mod tests {
         assert_eq!(seen(&state, Some(FormId(0x00AB_CDEF))), None);
         state.destroyed.insert(tester);
         assert_eq!(seen(&state, Some(tester)), None);
+
+        // A computer with no script of its own (the Overseer's terminal):
+        // usable, which it wasn't (only scripted, named or furniture objects
+        // were).
+        let terminal = world::scripting::Interactive {
+            reference: FormId(0x0050_06D8),
+            base: FormId(0x0002_9853),
+            script: None,
+            count: 1,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            trigger: None,
+            bounds: None,
+            name: Some("Overseer's Terminal".into()),
+            kind: esm::FourCC::new(b"TERM"),
+        };
+        let fresh = GameState::new(&order);
+        assert_eq!(
+            object_in_view(&cache, &order, &fresh, &[terminal], Some(FormId(0x0050_06D8)))
+                .map(|(r, _)| r),
+            Some(FormId(0x0050_06D8))
+        );
     }
     #[test]
     fn keys_in_messages_become_the_viewers() {

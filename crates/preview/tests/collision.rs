@@ -333,10 +333,15 @@ fn activators_with_open_and_close_swing_as_doors() {
             close: 25.0
         })
     );
-    // Its keyframed collision is its own, to move with the sequence.
+    // Its keyframed collision is its own, to move with the sequence. So is
+    // that of an activator a script animates (Megaton's gate: `Forward`,
+    // then `Left`), which isn't a door; a static's never moves.
     let c = scene.collider(RotationConvention::DEFAULT);
     assert!(c.owns(0x910));
-    assert!(!c.owns(0x911) && !c.owns(0x912));
+    assert!(c.owns(0x911) && !c.owns(0x912));
+    let animated = scene.animated_collision(RotationConvention::DEFAULT);
+    assert_eq!(animated.len(), 1);
+    assert_eq!(animated[0].reference, FormId(0x911));
 }
 
 /// `VDoorSliding01`'s two leaves go opposite ways (`VDoorTop01` up,

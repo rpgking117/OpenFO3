@@ -206,15 +206,14 @@ impl Player {
     }
 }
 
-/// The console key (`) switches between walking and flying (the free
-/// camera is the viewer's; the game's is the console's `tfc`). F is the
-/// game's view key (`player_camera`).
+/// The console's `tfc` switches between walking and the free camera
+/// (`console`). F is the game's view key (`player_camera`).
 pub fn toggle_walking(
-    keys: Res<ButtonInput<KeyCode>>,
+    mut console: ResMut<crate::console::Console>,
     mut player: ResMut<Player>,
     cameras: Query<&Transform, With<FlyCamera>>,
 ) {
-    if !keys.just_pressed(KeyCode::Backquote) {
+    if !std::mem::take(&mut console.toggle_free_camera) {
         return;
     }
     player.walking = !player.walking;

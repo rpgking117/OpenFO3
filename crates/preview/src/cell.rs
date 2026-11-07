@@ -1580,6 +1580,26 @@ pub fn swings(object: &world::Placement, sequences: &[nif::Sequence]) -> bool {
     is_opening_door(object) || opens_by_sequences(object, sequences)
 }
 
+/// An activator whose model's own animation moves its collision and that
+/// isn't a door ([`swings`]): keyframed bodies on animated nodes, such as
+/// Megaton's gate (`MegatonGateHouse01`, its gates on `leftgate01`,
+/// `rightgate01`, `MegatonGates01`, opened by its script's `PlayGroup
+/// Forward`). A keyframed body follows its node as the animation plays
+/// (Havok's keyframed motion; the collision objects' flag 0x80, synced every
+/// update); only a door's waits for its swing to end (`0047ab40`).
+pub fn animates_collision(
+    object: &world::Placement,
+    sequences: &[nif::Sequence],
+    collision: &[nif::CollisionPart],
+) -> bool {
+    object.base_type == esm::FourCC::new(b"ACTI")
+        && !sequences.is_empty()
+        && !swings(object, sequences)
+        && collision
+            .iter()
+            .any(|p| p.keyframed && nif::collision::layers::blocks_walking(p.layer))
+}
+
 /// Who owns a door's `leaf`th keyframed collision part in the collider, so
 /// each moves by itself: the first its form ID, others that ID's low 24 bits
 /// under 0xF1, 0xF2.. (plugin numbers no load order reaches here).
@@ -1670,11 +1690,27 @@ impl SwingDoor {
 impl CellScene {
     /// The cell's doors that open where they stand, with what moves them.
     pub fn swing_doors(&self, convention: RotationConvention) -> Vec<SwingDoor> {
+        self.moving_collision(convention, |object, model| swings(object, &model.sequences))
+    }
+
+    /// The cell's activators whose animation moves their collision
+    /// ([`animates_collision`]), with what moves it.
+    pub fn animated_collision(&self, convention: RotationConvention) -> Vec<SwingDoor> {
+        self.moving_collision(convention, |object, model| {
+            animates_collision(object, &model.sequences, &model.collision)
+        })
+    }
+
+    fn moving_collision(
+        &self,
+        convention: RotationConvention,
+        wanted: impl Fn(&world::Placement, &Model) -> bool,
+    ) -> Vec<SwingDoor> {
         let mut out = Vec::new();
         for instance in &self.instances {
             let object = &self.cell.objects[instance.object];
             let model = &self.models[instance.model];
-            if !swings(object, &model.sequences) || instance.part.is_some() {
+            if !wanted(object, model) || instance.part.is_some() {
                 continue;
             }
             let sequences = model.sequences.clone();
@@ -2067,7 +2103,8 @@ impl CellScene {
             }
             let object = &self.cell.objects[instance.object];
             let place = self.transform(instance, convention);
-            let door = swings(object, &model.sequences);
+            let door = swings(object, &model.sequences)
+                || animates_collision(object, &model.sequences, &model.collision);
             // A body Havok moves isn't here: whoever simulates it
             // ([`Self::dynamic_bodies`]) adds and moves its triangles.
             let moving = (!door && instance.part.is_none())

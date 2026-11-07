@@ -86,6 +86,7 @@ enum Square {
         object_bounds: Vec<cellview::ObjectBounds>,
         doors: Vec<DoorData>,
         swing_doors: Vec<cellview::SwingDoor>,
+        animated: Vec<cellview::SwingDoor>,
         talkers: Vec<crate::dialogue::Talker>,
         /// People it left out as disabled when it loaded
         /// (`world::ai::disabled_people_in_square`), who come in once a
@@ -297,7 +298,10 @@ pub fn stream_squares(
     mut clear: ResMut<ClearColor>,
     mut cameras: Query<(&mut Transform, &mut FlyCamera, &mut ImageSpaceGrade)>,
     mut state: ResMut<crate::dialogue::DialogueState>,
-    mut swing_doors: ResMut<crate::doors::SwingDoors>,
+    (mut swing_doors, mut animated): (
+        ResMut<crate::doors::SwingDoors>,
+        ResMut<crate::doors::AnimatedCollision>,
+    ),
     shown: Query<&crate::ai::Walker>,
     (old_talkers, brought): (Option<Res<crate::dialogue::Talkers>>, Res<crate::BroughtIn>),
 ) {
@@ -406,6 +410,7 @@ pub fn stream_squares(
                     collision: Box::new(scene.collision),
                     doors: scene.doors,
                     swing_doors: scene.swing_doors,
+                    animated: scene.animated,
                     disabled_people,
                 }
             }
@@ -490,6 +495,7 @@ pub fn stream_squares(
         let mut doors = Vec::new();
         let mut talkers = Vec::new();
         let mut swing = Vec::new();
+        let mut moving = Vec::new();
         let mut object_bounds = crate::scripts::ObjectBounds::default();
         for state in exterior.squares.values() {
             if let Square::Loaded {
@@ -497,6 +503,7 @@ pub fn stream_squares(
                 object_bounds: bounds,
                 doors: d,
                 swing_doors: s,
+                animated: a,
                 talkers: t,
                 ..
             } = state
@@ -504,6 +511,7 @@ pub fn stream_squares(
                 collision.extend(c);
                 doors.extend(d.iter().cloned());
                 swing.extend(s.iter());
+                moving.extend(a.iter());
                 talkers.extend(t.iter().copied());
                 object_bounds
                     .0
@@ -532,6 +540,7 @@ pub fn stream_squares(
         // their doors have them once the collider is in place).
         swing_doors.read_settings(&game.0.settings);
         swing_doors.replace(swing.into_iter(), &mut state.0);
+        animated.replace(moving.into_iter());
         // Every square takes the loaded lights that reach it, its
         // neighbours' too.
         let all: Vec<cellview::LightData> = exterior
